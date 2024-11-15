@@ -58,7 +58,7 @@ class CurveExtractor:
     def calculate_aif(self):
         ctp_array_aif = self.ctp_array * self.aif_roi
         max_diff_aif = self.max_diff * self.aif_roi[0]
-        p95 = np.percentile(max_diff_aif[max_diff_aif > 0], 98)
+        #p95 = np.percentile(max_diff_aif[max_diff_aif > 0], 98)
         # select the 10 highest voxels max_diff_aif and get indices
         indices_with_highest_values = np.unravel_index(np.argsort(max_diff_aif.ravel())[-100:], max_diff_aif.shape)
         segmentation = np.zeros_like(max_diff_aif)
@@ -119,7 +119,7 @@ def extract_ctp_array(folder: os.PathLike) -> np.ndarray:
 
 
 if __name__ == "__main__":
-    ctp_folder = "/scratch/amartinezmora/raw_data/ctp_registered_to_atlas"
+    ctp_folder = "/scratch/amartinezmora/raw_data/ctp_registered_to_atlas/mrclean_late_30002"
     atlas_file = "/scratch/amartinezmora/raw_data/atlas/Healthy.mhd"
     # Load CTP data
     ctp_array,image = extract_ctp_array(folder = ctp_folder)
@@ -127,7 +127,9 @@ if __name__ == "__main__":
     atlas = sitk.ReadImage(atlas_file)
 
     # Derive curves
-    curves = CurveExtractor(ctp_array, template_nii=atlas)
+    curves = CurveExtractor(ctp_array, template_nii=atlas, 
+                            aif_roi_center=(97, 293, 209), 
+                            vof_roi_center=(67, 257, 390))
     aif = curves.calculate_aif()
     vof = curves.calculate_vof()
     

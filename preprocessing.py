@@ -169,6 +169,7 @@ def case_analysis(cid : str, folder : os.PathLike, cfg : dict, t : np.ndarray):
     # CTP loading and derivation of average frame
     ctp_array,image = extract_ctp_array(folder = os.path.join(folder,cid))
     avg_frame, avg_frame_image = extract_avg_frame(ctp=ctp_array, image=image, time=t)
+    sitk.WriteImage(avg_frame_image, f"{cid}_sum.nii.gz")
     
     # MCA-ICA segmentation with TopCoW24 trained model, for bolus alignment
     assert "mca_cpt" in list(cfg.keys()), f"'mca_cpt' key is unavailable in configuration"
@@ -181,7 +182,7 @@ def case_analysis(cid : str, folder : os.PathLike, cfg : dict, t : np.ndarray):
     out_mca = (mca1*mca2).astype(float)
     out_mca_image = sitk.GetImageFromArray(out_mca)
     out_mca_image.CopyInformation(avg_frame_image)
-    sitk.WriteImage(out_mca_image, f"mca_mask_{cid}.nii.gz")
+    sitk.WriteImage(out_mca_image, f"{cid}_mca.nii.gz")
 
     # AIF derivation
     aif = extract_aif(ctp=ctp_array, mask=out_mca)
