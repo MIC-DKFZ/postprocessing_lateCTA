@@ -43,7 +43,6 @@ def extract_ctp_array(folder: os.PathLike) -> np.ndarray:
     return ctp_array, image
 
 
-d
 
 def extract_avg_frame(ctp : np.ndarray, image, time: np.ndarray) -> np.ndarray:
     """
@@ -112,6 +111,27 @@ def extract_aif(ctp : np.ndarray, mask : np.ndarray) -> np.ndarray:
     
     """
 
+    # Get the slice with the bottom mask information (earliest flow achievable possible)
+    slice_info = np.where(mask > 0)[0]
+    bottom_info = np.unique(slice_info)
+
+    # Select as bottom slice the 10th percentile slice
+    bottom_slice = int(np.round(np.percentile(bottom_info, 25)))
+    logger.info(f"Take segmentation for AIF in slice {bottom_slice}")
+
+    # Consider only the bottom slice
+    ctp_bottom_slice = ctp[:, bottom_slice]
+
+    # Create a boolean mask for the bottom slice
+    bottom_mask = mask[bottom_slice] > 0
+
+    # Apply the mask to the bottom values
+    masked_bottom_values = ctp_bottom_slice[:, bottom_mask]  # Shape: (t, number_of_positive_elements_in_bottom_slice)
+
+    # Compute the mean for each frame
+    aif = np.mean(masked_bottom_values, axis=1)
+
+    """
     # Flatten the mask for easier indexing
     masked_array_4d = ctp[:, mask > 0]  # Shape: (t, number_of_positive_mask_elements)
 
@@ -128,6 +148,7 @@ def extract_aif(ctp : np.ndarray, mask : np.ndarray) -> np.ndarray:
 
     # Compute the mean of the filtered values for each frame
     aif = np.nanmean(filtered_values, axis=1)
+    """
 
     return aif
 
@@ -158,6 +179,9 @@ def case_analysis(cid : str, folder : os.PathLike, cfg : dict, t : np.ndarray):
     mca1 = (mca > 4).astype(float)
     mca2 = (mca < 8).astype(float)
     out_mca = (mca1*mca2).astype(float)
+    out_mca_image = sitk.GetImageFromArray(out_mca)
+    out_mca_image.CopyInformation(avg_frame_image)
+    sitk.WriteImage(out_mca_image, f"mca_mask_{cid}.nii.gz")
 
     # AIF derivation
     aif = extract_aif(ctp=ctp_array, mask=out_mca)
@@ -168,8 +192,11 @@ def case_analysis(cid : str, folder : os.PathLike, cfg : dict, t : np.ndarray):
     cutoff = extract_inflection_points(x = t, y = aif)
     logger.info(f"Cutoff time: {cutoff} sec")
 
+    np.save("t.npy",t)
+    np.save("aif.npy",aif)
+
     # Trim CTP array to only include frames after bolus arrival
-    ctp_array = trim_ctp(ctp_array=ctp_array, t=t, cutoff=cutoff)
+    #ctp_array = trim_ctp(ctp_array=ctp_array, t=t, cutoff=cutoff)
 
 
 
@@ -185,7 +212,7 @@ def main(args):
     cfg = load_data(filename="config.json")
 
     # Load time resolutions and IDs
-    times, delta_t = extract_time_resolution(time_folder=time_folder)
+    times, delta_t = extract_time_resolution(folder = folder, time_folder=time_folder)
     cids = list(times.keys())
 
     for cid in cids:

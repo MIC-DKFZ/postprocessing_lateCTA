@@ -53,12 +53,13 @@ def extract_ids(folder : os.PathLike) -> list:
     return ids
 
 
-def extract_time_resolution(time_folder : os.PathLike) -> Union[dict, float]:
+def extract_time_resolution(folder : os.PathLike, time_folder : os.PathLike) -> Union[dict, float]:
     """
     Extract time resolution for all CTP scans
 
     Params
     ------
+    folder : folder with CTP files
     time_folder : folder with time files
 
     Returns
@@ -68,7 +69,7 @@ def extract_time_resolution(time_folder : os.PathLike) -> Union[dict, float]:
     
     """
     # Derive case IDs
-    cids = extract_ids(folder= time_folder)
+    cids = extract_ids(folder= folder)
 
     # Load all time files and resolutions
     times = {}
@@ -76,7 +77,7 @@ def extract_time_resolution(time_folder : os.PathLike) -> Union[dict, float]:
     for cid in cids:
         times[cid] = load_time(time_folder=time_folder, cid=cid)
         resolution = np.abs(np.diff(times[cid]))
-        resolutions += resolution
+        resolutions += [resolution]
 
     # Define target resolution as median of all time resolutions found
     delta_t = np.median(np.array(resolutions))

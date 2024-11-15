@@ -35,11 +35,18 @@ def extract_inflection_points(x: np.ndarray, y : np.ndarray) -> np.ndarray:
     argmax = np.argmax(y)
     inflection_points = inflection_points[inflection_points < argmax]
 
-    t_inflect = x[inflection_points]
-
-    # Consider that inflection point with the biggest second derivative
+    # Consider the inflection point with the biggest second derivative
     d2y_inflection = np.abs(d2y[inflection_points])
-    t_inflect = t_inflect[np.argmax(d2y_inflection)]
+    ind_inflection = np.argmax(d2y_inflection)
+
+    final_ind = inflection_points[ind_inflection]
+
+    # Consider a couple of slices earlier than the inflection point
+    # In case the AIF mask is being taken a bit later in the circulation
+    if final_ind > 2:
+        final_ind -= 2
+
+    t_inflect = x[final_ind]
 
     return t_inflect
 
