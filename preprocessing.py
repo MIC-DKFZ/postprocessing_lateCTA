@@ -3,10 +3,11 @@ import numpy as np
 import SimpleITK as sitk
 import argparse
 from loguru import logger
+
 from utils.load_save import load_data
 from utils.segment_mca_ctp import predictionAlgorithm
-import matplotlib.pyplot as plt
-from typing import Union
+from utils.curvature import extract_inflection_points
+from utils.time_manager import load_time, extract_ids, extract_time_resolution
 
 
 def extract_ctp_array(folder: os.PathLike) -> np.ndarray:
@@ -42,25 +43,9 @@ def extract_ctp_array(folder: os.PathLike) -> np.ndarray:
     return ctp_array, image
 
 
-def extract_ids(folder : os.PathLike) -> list:
-    """
-    Extract case IDs from CTP folder
+d
 
-    Params
-    ------
-    folder : folder with CTP information
-
-    Returns
-    -------
-    ids : case IDs
-    
-    """
-    ids = sorted(os.listdir(folder))
-    ids = [i for i in ids if os.path.isdir(os.path.join(folder,i))]
-    return ids
-
-
-def extract_avg_frame(ctp : np.ndarray, image) -> np.ndarray:
+def extract_avg_frame(ctp : np.ndarray, image, time: np.ndarray) -> np.ndarray:
     """
     Extract average frame from CTP
 
@@ -68,6 +53,7 @@ def extract_avg_frame(ctp : np.ndarray, image) -> np.ndarray:
     ------
     ctp : perfusion scan array
     image : simple ITK first frame image with spacing information
+    time : time array
 
     Returns
     -------
@@ -75,44 +61,39 @@ def extract_avg_frame(ctp : np.ndarray, image) -> np.ndarray:
     avg_frame_image : image with average frame information
     
     """
+    # Obtain average frame excluding the begining and end frames (exclude 10% of longer and shorter times)
+    exclude_t = time[-1]*0.1
+    time_inds_preserve = np.where((time > exclude_t) & (time < (time[-1]-exclude_t)))[0]
 
-    avg_frame = np.mean(ctp, axis=0)
+    avg_frame = np.mean(ctp[time_inds_preserve], axis=0)
     avg_frame_image = sitk.GetImageFromArray(avg_frame)
     avg_frame_image.CopyInformation(image)
 
     return avg_frame, avg_frame_image
 
 
-
-def load_time(time_folder : os.PathLike, cid : str) -> np.ndarray:
+def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float) -> np.ndarray:
     """
-    Load time array information
+    Trim CTP scan to only include frames during and after bolus
+    arrival
 
     Params
     ------
-    time_folder : folder with time files
-    cid : case ID to be extracted
+    ctp_array : CTP frames
+    t : time frames
+    cutoff : bolus arrival time to MCA-ICA
 
     Returns
     -------
-    t : time information for case of interest
-    
+    trimmed : trimmed CTP scan for bolus arrival time
+
     """
-    assert os.path.exists(time_folder), f"Time folder '{time_folder}' does not exist"
-    # Obtain time files
-    time_files = np.array(sorted(os.listdir(time_folder)), dtype=str)
+    # Derive bolus indexes
+    bolus_inds = np.where(t > cutoff)[0]
+    assert (bolus_inds.min() > 0) and (bolus_inds.max() < ctp_array.shape[0]), "Bolus indexes are negative or exceed the number of frames of the CTP scan"
 
-    cid_files = time_files[np.char.find(time_files, cid) >= 0]
-    assert cid_files.shape[0] == 1, f"Either none or more than one corresponding case ID files were found in time folder '{time_folder}'"  
+    return ctp_array[bolus_inds:] 
 
-    # Load time information from found file
-    time_file = os.path.join(time_folder, cid_files[0])
-    time_info = np.load(time_file)
-
-    # Take time information from mid-slice and set the offset to zero
-    t = time_info[time_info.shape[0] // 2]
-    t -= t.min()
-    return t
 
 
 def extract_aif(ctp : np.ndarray, mask : np.ndarray) -> np.ndarray:
@@ -151,25 +132,22 @@ def extract_aif(ctp : np.ndarray, mask : np.ndarray) -> np.ndarray:
     return aif
 
 
-def case_analysis(cid : str, time_folder : os.PathLike, folder : os.PathLike, cfg : dict):
+def case_analysis(cid : str, folder : os.PathLike, cfg : dict, t : np.ndarray):
     """
     Analyze CTP data of a given case ID
 
     Params
     ------
     cid : case ID of interest
-    time_folder : folder with time files
     folder : folder with CTP information
     cfg : preprocessing configuration
-
+    t : corresponding time vector for case of interest
     
     """
-    # Time loading
-    t = load_time(time_folder=time_folder, cid=cid)
 
     # CTP loading and derivation of average frame
     ctp_array,image = extract_ctp_array(folder = os.path.join(folder,cid))
-    avg_frame, avg_frame_image = extract_avg_frame(ctp=ctp_array, image=image)
+    avg_frame, avg_frame_image = extract_avg_frame(ctp=ctp_array, image=image, time=t)
     
     # MCA-ICA segmentation with TopCoW24 trained model, for bolus alignment
     assert "mca_cpt" in list(cfg.keys()), f"'mca_cpt' key is unavailable in configuration"
@@ -183,14 +161,16 @@ def case_analysis(cid : str, time_folder : os.PathLike, folder : os.PathLike, cf
 
     # AIF derivation
     aif = extract_aif(ctp=ctp_array, mask=out_mca)
+    logger.info(f"AIF extracted, values: {aif}")
 
+    # Derive cutoff time where the bolus starts coming into 
+    # the arteries with inflection points from AIF
+    cutoff = extract_inflection_points(x = t, y = aif)
+    logger.info(f"Cutoff time: {cutoff} sec")
 
-    plt.figure()
-    plt.plot(t, aif)
-    plt.title("AIF")
-    plt.savefig("aif.png")
+    # Trim CTP array to only include frames after bolus arrival
+    ctp_array = trim_ctp(ctp_array=ctp_array, t=t, cutoff=cutoff)
 
-    
 
 
 def main(args):
@@ -204,12 +184,13 @@ def main(args):
     assert os.path.exists(os.path.join(os.getcwd(),"config.json")), "Configuration file does not exist"
     cfg = load_data(filename="config.json")
 
-    # Load IDs
-    cids = extract_ids(folder = folder)
+    # Load time resolutions and IDs
+    times, delta_t = extract_time_resolution(time_folder=time_folder)
+    cids = list(times.keys())
 
     for cid in cids:
         logger.info(f"Processing case {cid}")
-        case_analysis(cid=cid, time_folder=time_folder, folder=folder, cfg = cfg)
+        case_analysis(cid=cid, folder=folder, cfg = cfg, t=times[cid])
 
 
 
