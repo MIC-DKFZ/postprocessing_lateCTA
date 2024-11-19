@@ -28,8 +28,8 @@ if __name__ == "__main__":
     #shutil.copy(atlas_file, out_folder)
 
     # Load first frame of CTP and atlas
-    ctp_frame_files = sorted(os.listdir(out_folder))
-    ctp_frame_files = [os.path.join(out_folder, f) for f in ctp_frame_files if ".nii.gz" in f]
+    ctp_frame_files = sorted(os.listdir(ctp_folder))
+    ctp_frame_files = [os.path.join(ctp_folder, f) for f in ctp_frame_files if ".nii.gz" in f]
     t0_file = ctp_frame_files[0]
     t0_image = sitk.ReadImage(t0_file)
     atlas_image = sitk.ReadImage(atlas_file)
