@@ -3,11 +3,12 @@ import numpy as np
 import SimpleITK as sitk
 import argparse
 from loguru import logger
+from typing import Union
 
 from utils.load_save import load_data
 from utils.segment_mca_ctp import predictionAlgorithm
 from utils.curvature import extract_inflection_points
-from utils.time_manager import load_time, extract_ids, extract_time_resolution
+from utils.time_manager import load_time, extract_ids, extract_time_resolution, resample_time, apply_weighted_moving_average
 
 
 def extract_ctp_array(folder: os.PathLike) -> np.ndarray:
@@ -71,7 +72,7 @@ def extract_avg_frame(ctp : np.ndarray, image, time: np.ndarray) -> np.ndarray:
     return avg_frame, avg_frame_image
 
 
-def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float) -> np.ndarray:
+def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float) -> Union[np.ndarray, np.ndarray]:
     """
     Trim CTP scan to only include frames during and after bolus
     arrival
@@ -84,14 +85,18 @@ def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float) -> np.ndarra
 
     Returns
     -------
-    trimmed : trimmed CTP scan for bolus arrival time
+    trimmed_ctp : trimmed CTP scan for bolus arrival time
+    trimmed_time : time vector trimmed by computed cutoff
 
     """
     # Derive bolus indexes
     bolus_inds = np.where(t > cutoff)[0]
     assert (bolus_inds.min() > 0) and (bolus_inds.max() < ctp_array.shape[0]), "Bolus indexes are negative or exceed the number of frames of the CTP scan"
 
-    return ctp_array[bolus_inds:] 
+    trimmed_ctp = ctp_array[bolus_inds]
+    trimmed_time = t[bolus_inds]
+
+    return trimmed_ctp, trimmed_time
 
 
 
@@ -153,7 +158,7 @@ def extract_aif(ctp : np.ndarray, mask : np.ndarray) -> np.ndarray:
     return aif
 
 
-def case_analysis(cid : str, folder : os.PathLike, cfg : dict, t : np.ndarray):
+def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : dict, t : np.ndarray, delta_t : float):
     """
     Analyze CTP data of a given case ID
 
@@ -161,8 +166,10 @@ def case_analysis(cid : str, folder : os.PathLike, cfg : dict, t : np.ndarray):
     ------
     cid : case ID of interest
     folder : folder with CTP information
+    output : output folder
     cfg : preprocessing configuration
     t : corresponding time vector for case of interest
+    delta_t : time resolution
     
     """
 
@@ -197,8 +204,27 @@ def case_analysis(cid : str, folder : os.PathLike, cfg : dict, t : np.ndarray):
     np.save("aif.npy",aif)
 
     # Trim CTP array to only include frames after bolus arrival
-    #ctp_array = trim_ctp(ctp_array=ctp_array, t=t, cutoff=cutoff)
-
+    ctp_array, t = trim_ctp(ctp_array=ctp_array, t=t, 
+                            cutoff=cutoff)
+    
+    # Resample to a fixed time resolution
+    assert "time_interp" in list(cfg.keys()), "'time_interp' key not in configuration"
+    resampled = resample_time(ctp_array=ctp_array, 
+                              times=t, 
+                              delta_t=delta_t, 
+                              interp_type=cfg["time_interp"])
+    
+    # Denoise with moving average techniques
+    assert "window" in list(cfg.keys()), "'window' key not in configuration"
+    smoothed = apply_weighted_moving_average(scan=resampled,
+                                             time_points=t,
+                                             window_size=cfg["window"])
+    
+    for sm in range(smoothed.shape[0]):
+        outfile = os.path.join(output, f"{cid}_t_{sm}.nii.gz")
+        smoothed_frame = sitk.GetImageFromArray(smoothed[sm])
+        smoothed_frame.CopyInformation(image)
+        sitk.WriteImage(smoothed_frame, outfile)
 
 
 def main(args):
@@ -207,6 +233,12 @@ def main(args):
     # Read arguments
     folder = args.folder # Folder with CTP data subfolders
     time_folder = args.time # Folder with time array data
+    out_folder = args.out # Output folder with results
+
+    assert os.path.exists(os.path.dirname(out_folder)), f"Parent folder of output folder '{out_folder}' does not exist"
+
+    if not(os.path.exists(out_folder)):
+        os.makedirs(out_folder)
 
     # Load config
     assert os.path.exists(os.path.join(os.getcwd(),"config.json")), "Configuration file does not exist"
@@ -226,6 +258,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--folder", help="Folder with CTP data", required=True, type=str)
     parser.add_argument("--time", help="Folder with time data", required=True, type=str)
+    parser.add_argument("--out", help="Output folder", required=True, type=str)
 
     args = parser.parse_args()
     return args
