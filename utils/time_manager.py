@@ -133,7 +133,7 @@ def apply_weighted_moving_average(scan : np.ndarray, time_points : np.ndarray, w
     """
     
     half_window = window_size // 2
-    smoothed_scan = np.zeros_like(scan)
+    smoothed_scan = scan.copy() # Initialize smoothed scan with a copy of the original
     
     # Pad the time dimension to handle edges
     padded_scan = np.pad(scan, ((half_window, half_window), (0, 0), (0, 0), (0, 0)), mode='edge')
@@ -142,19 +142,41 @@ def apply_weighted_moving_average(scan : np.ndarray, time_points : np.ndarray, w
     # Apply weighted moving average
     for t in range(scan.shape[0]):
         # Extract the local window of time points
-        window = padded_scan[t:t + window_size]
-        window_times = padded_time_points[t:t + window_size]
-        
+        window = padded_scan[t:(t + window_size)]
+        window_times = padded_time_points[t:(t + window_size)]
+
         # Compute the time differences as weights
         time_diffs = np.diff(window_times)
-        time_diffs = np.append(time_diffs, time_diffs[-1])  # Keep weights consistent
-        
-        # Normalize the weights
-        weights = time_diffs / np.sum(time_diffs)
-        
-        # Apply the weighted average for the current time frame
-        smoothed_scan[t] = np.sum(window * weights[:, np.newaxis, np.newaxis, np.newaxis], axis=0)
-    
+        if time_diffs.shape[0] > 0:
+            time_diffs = np.insert(time_diffs, 0, time_diffs[0])  # Prepend to match window size
+
+            window_sum = time_diffs.sum() # Determine if we are in an edge
+
+            if window_sum > 0:
+                ind_non_zero = np.where(time_diffs > 0.)[0]
+
+                if ind_non_zero.shape[0] > 1: # If there is only one non-zero index, do not smooth
+
+                    if ind_non_zero.shape[0] < window.shape[0]:
+                        window = window[ind_non_zero]
+                        window_times = window_times[ind_non_zero]
+                        time_diffs = time_diffs[ind_non_zero]
+                
+                    
+                    #time_diffs = np.insert(time_diffs, 0, time_diffs[0])  # Prepend to match window size
+                    
+
+                    #if time_diffs.shape[0] != window_size:
+                    #    time_diffs = np.concatenate([time_diffs, np.array([time_diffs[-1]]*abs(window_size-time_diffs.shape[0]))])
+                    #else:
+                    #    time_diffs = np.append(time_diffs, time_diffs[-1])  # Keep weights consistent
+                    
+                    # Normalize the weights
+                    weights = time_diffs / np.sum(time_diffs)
+                    
+                    # Apply the weighted average for the current time frame
+                    smoothed_scan[t] = np.sum(window * weights[:, np.newaxis, np.newaxis, np.newaxis], axis=0)
+
     return smoothed_scan
 
 
@@ -166,11 +188,14 @@ if __name__ == "__main__":
     cid = os.path.basename(ctp_folder)
     times = load_time(time_folder = time_folder, cid=cid)
     ctp_array, image = extract_ctp_array(folder=ctp_folder)
+    ctp_array = np.concatenate([np.zeros((2, ctp_array.shape[1], ctp_array.shape[2], ctp_array.shape[3])),
+                                ctp_array])
     t1 = time.time()
     ctp_smooth = apply_weighted_moving_average(scan=ctp_array, 
                                                time_points=times,
                                                window_size=3)
     print(time.time()-t1)
+    
     print(ctp_array.shape, ctp_smooth.shape)
     print(ctp_array.min(), ctp_array.max(), ctp_array.mean(), ctp_array.std())
     print(ctp_smooth.min(), ctp_smooth.max(), ctp_smooth.mean(), ctp_smooth.std())
