@@ -118,18 +118,46 @@ def extract_ctp_array(folder: os.PathLike) -> np.ndarray:
     return ctp_array, image
 
 
+def get_center_of_mass_index(sitk_image):
+    # Label the regions in the image
+    label_filter = sitk.ConnectedComponentImageFilter()
+    labeled_img = label_filter.Execute(sitk_image)
+
+    # Calculate properties of labeled regions
+    shape_stats = sitk.LabelShapeStatisticsImageFilter()
+    shape_stats.Execute(labeled_img)
+
+    # Assuming the label of interest is 1 (often, labeled images start labeling from 1)
+    center_of_mass = shape_stats.GetCentroid(1)
+    # Convert physical coordinates to index coordinates
+    center_of_mass_index = sitk_image.TransformPhysicalPointToIndex(center_of_mass)
+    # swap x and z
+    center_of_mass_index = (center_of_mass_index[2], center_of_mass_index[1], center_of_mass_index[0])
+    return center_of_mass_index
+
+
 if __name__ == "__main__":
     ctp_folder = "/scratch/amartinezmora/raw_data/ctp_registered_to_atlas/mrclean_late_30002"
-    atlas_file = "/scratch/amartinezmora/raw_data/atlas/Healthy.mhd"
+    atlas_file = "/scratch/amartinezmora/raw_data/atlas/atlas.nii.gz"
+    aif_mask_file = "/scratch/amartinezmora/raw_data/atlas/aif.nii.gz"
+    vof_mask_file = "/scratch/amartinezmora/raw_data/atlas/vof.nii.gz"
+
     # Load CTP data
     ctp_array,image = extract_ctp_array(folder = ctp_folder)
     # Load atlas data
     atlas = sitk.ReadImage(atlas_file)
+    # Load masks data
+    aif_mask = sitk.ReadImage(aif_mask_file)
+    vof_mask = sitk.ReadImage(vof_mask_file)
+
+    # Load AIF and VOF indexes
+    aif_index = get_center_of_mass_index(sitk_image=aif_mask)
+    vof_index = get_center_of_mass_index(sitk_image=vof_mask)
 
     # Derive curves
     curves = CurveExtractor(ctp_array, template_nii=atlas, 
-                            aif_roi_center=(97, 293, 209), 
-                            vof_roi_center=(67, 257, 390))
+                            aif_roi_center=aif_index, 
+                            vof_roi_center=vof_index)
     aif = curves.calculate_aif()
     vof = curves.calculate_vof()
     
