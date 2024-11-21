@@ -8,13 +8,13 @@ import os
 
 
 class predictionAlgorithm:
-   def __init__(self, train_dir : os.PathLike):
+   def __init__(self, train_dir : os.PathLike, device = torch.device("cuda", 0)):
        self.predictor = nnUNetPredictor(
            tile_step_size=0.5,
            use_gaussian=True,
            use_mirroring=True,
            perform_everything_on_device=True,
-           device=torch.device("cuda", 0),
+           device=device,
            verbose=False,
            verbose_preprocessing=False,
            allow_tqdm=True,
