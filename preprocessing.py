@@ -9,7 +9,7 @@ import torch
 
 from utils.load_save import load_data
 from utils.segment_mca_ctp import predictionAlgorithm
-from utils.curvature import extract_inflection_points
+from utils.curvature import extract_inflection_points, second_cycle
 from utils.time_manager import load_time, extract_ids, extract_time_resolution, resample_time, apply_weighted_moving_average
 
 
@@ -74,7 +74,7 @@ def extract_avg_frame(ctp : np.ndarray, image, time: np.ndarray) -> np.ndarray:
     return avg_frame, avg_frame_image
 
 
-def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float) -> Union[np.ndarray, np.ndarray]:
+def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float, t_secondary: float = None) -> Union[np.ndarray, np.ndarray]:
     """
     Trim CTP scan to only include frames during and after bolus
     arrival
@@ -84,6 +84,7 @@ def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float) -> Union[np.
     ctp_array : CTP frames
     t : time frames
     cutoff : bolus arrival time to MCA-ICA
+    t_secondary : time for a secondary peak
 
     Returns
     -------
@@ -93,6 +94,15 @@ def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float) -> Union[np.
     """
     # Derive bolus indexes
     bolus_inds = np.where(t > cutoff)[0]
+
+    if t_secondary is not None:
+        if t_secondary > cutoff:
+            # The secondary peak should come after the major, 
+            # else we have done something wrong 
+            secondary_inds = np.where(t < t_secondary)[0] 
+            # Intersect the original bolus indexes with the secondary indexes 
+            bolus_inds = np.intersect1d(bolus_inds, secondary_inds)
+
     assert (bolus_inds.min() > 0) and (bolus_inds.max() < ctp_array.shape[0]), "Bolus indexes are negative or exceed the number of frames of the CTP scan"
 
     trimmed_ctp = ctp_array[bolus_inds]
@@ -179,7 +189,7 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
     # CTP loading and derivation of average frame
     ctp_array,image = extract_ctp_array(folder = os.path.join(folder,cid))
     avg_frame, avg_frame_image = extract_avg_frame(ctp=ctp_array, image=image, time=t)
-    sitk.WriteImage(avg_frame_image, f"{cid}_sum.nii.gz")
+    # sitk.WriteImage(avg_frame_image, f"{cid}_sum.nii.gz")
     
     # MCA-ICA segmentation with TopCoW24 trained model, for bolus alignment
     assert "mca_cpt" in list(cfg.keys()), f"'mca_cpt' key is unavailable in configuration"
@@ -187,12 +197,17 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
     mca,_ = predictionAlgorithm(train_dir=train_dir, device=torch.device("cuda",0)).predict(image_ct=avg_frame_image)
 
     # MCA-ICA mask is composed by output labels 4, 5, 6, and 7
-    mca1 = (mca > 4).astype(float)
-    mca2 = (mca < 8).astype(float)
-    out_mca = (mca1*mca2).astype(bool).astype(float)
-    out_mca_image = sitk.GetImageFromArray(out_mca)
-    out_mca_image.CopyInformation(avg_frame_image)
-    #sitk.WriteImage(out_mca_image, f"{cid}_ica.nii.gz")
+    ica_segm = (mca == 4).astype(float) + (mca == 6).astype(float)
+    out_mca = (ica_segm > 0).astype(float)
+
+    if out_mca.sum() == 0:
+        logger.info("No segmentation was found for ICA, trying with MCA...")
+        mca_segm = (mca == 5).astype(float) + (mca == 7).astype(float)
+        out_mca = (mca_segm > 0).astype(float)
+
+    if out_mca.sum() == 0:
+        logger.info("No segmentation was found for ICA nor MCA, trying with the rest of the vessels...")
+        out_mca = (mca > 0).astype(float)
 
     # AIF derivation
     aif = extract_aif(ctp=ctp_array, mask=out_mca)
@@ -203,12 +218,18 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
     cutoff = extract_inflection_points(x = t, y = aif)
     logger.info(f"Cutoff time: {cutoff} sec")
 
-    np.save("t.npy",t)
-    np.save("aif.npy",aif)
+    # Derive if there exist secondary flow. 
+    # If so, restrict the analysis before this secondary flow 
+    t_secondary = second_cycle(x = t, y = aif, 
+                               thr_prominence=cfg["thr_prominence"])
+    if t_secondary is not None:
+        logger.info(f"Found secondary flow with peak at time: {t_secondary} sec")
 
     # Trim CTP array to only include frames after bolus arrival
+    # and before any secondary flow 
     ctp_array, t = trim_ctp(ctp_array=ctp_array, t=t, 
-                            cutoff=cutoff)
+                            cutoff=cutoff,
+                            t_secondary=t_secondary)
     logger.info(f"Frames after trimming: {ctp_array.shape[0]}")
     logger.info(f"Time after trimming: {t}")
     
@@ -261,9 +282,14 @@ def main(args):
     logger.info(f"Time resolution: {delta_t} sec")
     cids = list(times.keys())
 
+    assert "overwrite" in list(cfg.keys()), f"'overwrite' key not in configuration"
+
     for cid in cids:
         logger.info(f"Processing case {cid}")
-        case_analysis(cid=cid, folder=folder, cfg = cfg, t=times[cid], output=out_folder, delta_t=delta_t)
+        out_folder_cid = os.path.join(out_folder, cid)
+        if not(os.path.exists(out_folder_cid)) or (cfg["overwrite"].lower() != "n"): 
+            # If case has already been processed and overwrite is set to no, skip  
+            case_analysis(cid=cid, folder=folder, cfg = cfg, t=times[cid], output=out_folder, delta_t=delta_t)
 
 
 
