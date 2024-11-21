@@ -4,6 +4,8 @@ import SimpleITK as sitk
 import argparse
 from loguru import logger
 from typing import Union
+import matplotlib.pyplot as plt
+import torch
 
 from utils.load_save import load_data
 from utils.segment_mca_ctp import predictionAlgorithm
@@ -95,6 +97,7 @@ def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float) -> Union[np.
 
     trimmed_ctp = ctp_array[bolus_inds]
     trimmed_time = t[bolus_inds]
+    trimmed_time -= trimmed_time.min()
 
     return trimmed_ctp, trimmed_time
 
@@ -181,15 +184,15 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
     # MCA-ICA segmentation with TopCoW24 trained model, for bolus alignment
     assert "mca_cpt" in list(cfg.keys()), f"'mca_cpt' key is unavailable in configuration"
     train_dir = cfg["mca_cpt"]
-    mca,_ = predictionAlgorithm(train_dir=train_dir).predict(image_ct=avg_frame_image)
+    mca,_ = predictionAlgorithm(train_dir=train_dir, device=torch.device("cuda",0)).predict(image_ct=avg_frame_image)
 
     # MCA-ICA mask is composed by output labels 4, 5, 6, and 7
     mca1 = (mca > 4).astype(float)
     mca2 = (mca < 8).astype(float)
-    out_mca = (mca1*mca2).astype(float)
+    out_mca = (mca1*mca2).astype(bool).astype(float)
     out_mca_image = sitk.GetImageFromArray(out_mca)
     out_mca_image.CopyInformation(avg_frame_image)
-    sitk.WriteImage(out_mca_image, f"{cid}_mca.nii.gz")
+    #sitk.WriteImage(out_mca_image, f"{cid}_ica.nii.gz")
 
     # AIF derivation
     aif = extract_aif(ctp=ctp_array, mask=out_mca)
@@ -206,6 +209,8 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
     # Trim CTP array to only include frames after bolus arrival
     ctp_array, t = trim_ctp(ctp_array=ctp_array, t=t, 
                             cutoff=cutoff)
+    logger.info(f"Frames after trimming: {ctp_array.shape[0]}")
+    logger.info(f"Time after trimming: {t}")
     
     # Resample to a fixed time resolution
     assert "time_interp" in list(cfg.keys()), "'time_interp' key not in configuration"
@@ -213,15 +218,22 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
                               times=t, 
                               delta_t=delta_t, 
                               interp_type=cfg["time_interp"])
+    logger.info(f"Shape of resampled scan: {resampled.shape}")
     
     # Denoise with moving average techniques
     assert "window" in list(cfg.keys()), "'window' key not in configuration"
+    assert ctp_array.shape[0] > cfg["window"], "Trimmed and resampled CTP scans has less frames than the window specified for averaging"
     smoothed = apply_weighted_moving_average(scan=resampled,
                                              time_points=t,
                                              window_size=cfg["window"])
+    logger.info(f"Shape of smoothed scan: {resampled.shape}")
     
-    for sm in range(smoothed.shape[0]):
-        outfile = os.path.join(output, f"{cid}_t_{sm}.nii.gz")
+    output_cid = os.path.join(output, cid)
+    if not(os.path.exists(output_cid)):
+        os.makedirs(output_cid)
+
+    for sm in range(smoothed.shape[0]):        
+        outfile = os.path.join(output_cid, f"{cid}_t_{sm}.nii.gz")
         smoothed_frame = sitk.GetImageFromArray(smoothed[sm])
         smoothed_frame.CopyInformation(image)
         sitk.WriteImage(smoothed_frame, outfile)
@@ -246,11 +258,12 @@ def main(args):
 
     # Load time resolutions and IDs
     times, delta_t = extract_time_resolution(folder = folder, time_folder=time_folder)
+    logger.info(f"Time resolution: {delta_t} sec")
     cids = list(times.keys())
 
     for cid in cids:
         logger.info(f"Processing case {cid}")
-        case_analysis(cid=cid, folder=folder, cfg = cfg, t=times[cid])
+        case_analysis(cid=cid, folder=folder, cfg = cfg, t=times[cid], output=out_folder, delta_t=delta_t)
 
 
 
