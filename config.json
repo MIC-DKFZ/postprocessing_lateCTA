@@ -1,4 +1,6 @@
 {"mca_cpt":"/scratch/amartinezmora/det_models/Dataset870_TopCoW24/nnUNetTrainerSkeletonRecallNoMirroring__nnUNetPlans__3d_fullres",
 "window":3,
-"time_interp":"linear"}
+"time_interp":"linear",
+"thr_prominence":20,
+"overwrite":"n"}
 
