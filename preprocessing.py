@@ -112,6 +112,29 @@ def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float, t_secondary:
     return trimmed_ctp, trimmed_time
 
 
+def extract_cids(ctp_folder : os.PathLike, time_info : dict) -> np.ndarray:
+    """
+    Extract IDs of cases
+    
+    Params
+    ------
+    ctp_folder : folder with CTP data
+    time_info : time information with case IDs
+
+    Returns
+    -------
+    cids : case IDs
+    
+    """
+    # Extract case IDs 
+    cids = np.array(sorted(os.listdir(ctp_folder)), dtype=str)
+    cids_time = np.array(list(time_info.keys()), dtype=str)
+
+    cids = np.intersect1d(cids, cids_time)
+
+    return cids
+
+
 
 def extract_aif(ctp : np.ndarray, mask : np.ndarray) -> np.ndarray:
     """
@@ -192,25 +215,37 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
     # sitk.WriteImage(avg_frame_image, f"{cid}_sum.nii.gz")
     
     # MCA-ICA segmentation with TopCoW24 trained model, for bolus alignment
-    assert "mca_cpt" in list(cfg.keys()), f"'mca_cpt' key is unavailable in configuration"
-    train_dir = cfg["mca_cpt"]
-    mca,_ = predictionAlgorithm(train_dir=train_dir, device=torch.device("cuda",0)).predict(image_ct=avg_frame_image)
+    # Check first if the AIF has already been computed before
+    aif_file = os.path.join(os.path.dirname(output), "aif", f"{cid}.npy")
+    if not(os.path.exists(aif_file)): 
+        assert "mca_cpt" in list(cfg.keys()), f"'mca_cpt' key is unavailable in configuration"
+        train_dir = cfg["mca_cpt"]
+        mca,_ = predictionAlgorithm(train_dir=train_dir, device=torch.device("cuda",0)).predict(image_ct=avg_frame_image)
 
-    # MCA-ICA mask is composed by output labels 4, 5, 6, and 7
-    ica_segm = (mca == 4).astype(float) + (mca == 6).astype(float)
-    out_mca = (ica_segm > 0).astype(float)
+        # MCA-ICA mask is composed by output labels 4, 5, 6, and 7
+        ica_segm = (mca == 4).astype(float) + (mca == 6).astype(float)
+        out_mca = (ica_segm > 0).astype(float)
 
-    if out_mca.sum() == 0:
-        logger.info("No segmentation was found for ICA, trying with MCA...")
-        mca_segm = (mca == 5).astype(float) + (mca == 7).astype(float)
-        out_mca = (mca_segm > 0).astype(float)
+        if out_mca.sum() == 0:
+            logger.info("No segmentation was found for ICA, trying with MCA...")
+            mca_segm = (mca == 5).astype(float) + (mca == 7).astype(float)
+            out_mca = (mca_segm > 0).astype(float)
 
-    if out_mca.sum() == 0:
-        logger.info("No segmentation was found for ICA nor MCA, trying with the rest of the vessels...")
-        out_mca = (mca > 0).astype(float)
+        if out_mca.sum() == 0:
+            logger.info("No segmentation was found for ICA nor MCA, trying with the rest of the vessels...")
+            out_mca = (mca > 0).astype(float)
 
-    # AIF derivation
-    aif = extract_aif(ctp=ctp_array, mask=out_mca)
+        # AIF derivation
+        aif = extract_aif(ctp=ctp_array, mask=out_mca)
+
+        # Store AIF
+        np.save(aif_file, aif)
+
+    else:
+        # Load existing AIF
+        logger.info(f"Loading existing AIF for case '{cid}'")
+        aif = np.load(aif_file) 
+
     logger.info(f"AIF extracted, values: {aif}")
 
     # Derive cutoff time where the bolus starts coming into 
@@ -273,14 +308,29 @@ def main(args):
     if not(os.path.exists(out_folder)):
         os.makedirs(out_folder)
 
+    # Set up logfile
+    logfile = os.path.join(os.path.dirname(out_folder),"preprocessing.log")
+    logger.add(logfile, level="INFO")
+
+    # Prepare folder where to store AIFs, too, to avoid recomputations with GPU
+    aif_folder = os.path.join(os.path.dirname(out_folder), "aif")
+    if not(os.path.exists(aif_folder)):
+        os.makedirs(aif_folder)
+
     # Load config
     assert os.path.exists(os.path.join(os.getcwd(),"config.json")), "Configuration file does not exist"
     cfg = load_data(filename="config.json")
 
     # Load time resolutions and IDs
-    times, delta_t = extract_time_resolution(folder = folder, time_folder=time_folder)
+    assert "time_delta_default" in list(cfg.keys()), "Key 'time_delta_default' missing in configuration"
+    times, delta_t = extract_time_resolution(folder = folder, 
+                                             time_folder=time_folder, 
+                                             default_delta=cfg["time_delta_default"])
     logger.info(f"Time resolution: {delta_t} sec")
     cids = list(times.keys())
+
+    # Extract case IDs from CTP image folders
+    cids = extract_cids(ctp_folder=folder, time_info=times) 
 
     assert "overwrite" in list(cfg.keys()), f"'overwrite' key not in configuration"
 
@@ -288,7 +338,8 @@ def main(args):
         logger.info(f"Processing case {cid}")
         out_folder_cid = os.path.join(out_folder, cid)
         if not(os.path.exists(out_folder_cid)) or (cfg["overwrite"].lower() != "n"): 
-            # If case has already been processed and overwrite is set to no, skip  
+            # If case has already been processed and overwrite is set to "n", skip 
+            assert cid in list(times.keys()), f"Case ID '{cid}' not in time information dictionary" 
             case_analysis(cid=cid, folder=folder, cfg = cfg, t=times[cid], output=out_folder, delta_t=delta_t)
 
 
