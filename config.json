@@ -2,5 +2,6 @@
 "window":3,
 "time_interp":"linear",
 "thr_prominence":20,
-"overwrite":"n"}
+"overwrite":"n",
+"time_delta_default":1.5}
 
