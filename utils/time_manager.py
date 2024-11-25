@@ -2,12 +2,7 @@ import numpy as np
 import os,sys
 from typing import Union
 from scipy.interpolate import interp1d
-import torch
-import torch.nn.functional as F
-import SimpleITK as sitk
-import matplotlib.pyplot as plt
-import imageio
-import time
+from loguru import logger
 
 
 def load_time(time_folder : os.PathLike, cid : str) -> np.ndarray:
@@ -29,7 +24,11 @@ def load_time(time_folder : os.PathLike, cid : str) -> np.ndarray:
     time_files = np.array(sorted(os.listdir(time_folder)), dtype=str)
 
     cid_files = time_files[np.char.find(time_files, cid) >= 0]
-    assert cid_files.shape[0] == 1, f"Either none or more than one corresponding case ID files were found in time folder '{time_folder}'"  
+    if cid_files.shape[0] == 0:
+        logger.info(f"No time file found for case ID '{cid}', skipping...")
+        return None
+    
+    #assert cid_files.shape[0] == 1, f"Either none or more than one corresponding case ID files were found in time folder '{time_folder}'"  
 
     # Load time information from found file
     time_file = os.path.join(time_folder, cid_files[0])
@@ -56,7 +55,7 @@ def extract_ids(folder : os.PathLike) -> list:
     
     """
     ids = sorted(os.listdir(folder))
-    ids = [i for i in ids if os.path.isdir(os.path.join(folder,i))]
+    ids = ["_".join(i.split("_")[:(-1)]) for i in ids]
     return ids
 
 
@@ -76,15 +75,17 @@ def extract_time_resolution(folder : os.PathLike, time_folder : os.PathLike, def
     
     """
     # Derive case IDs
-    cids = extract_ids(folder= folder)
+    cids = extract_ids(folder= time_folder)
 
     # Load all time files and resolutions
     times = {}
     resolutions = []
     for cid in cids:
-        times[cid] = load_time(time_folder=time_folder, cid=cid)
-        resolution = np.abs(np.diff(times[cid]))
-        resolutions += resolution.tolist()
+        times_cid = load_time(time_folder=time_folder, cid=cid)
+        if times_cid is not None:
+            times[cid] = times_cid
+            resolution = np.abs(np.diff(times[cid]))
+            resolutions += resolution.tolist()
 
 
     # Define target resolution as median of all time resolutions found
