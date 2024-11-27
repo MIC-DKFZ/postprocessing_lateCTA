@@ -30,7 +30,8 @@ def extract_ctp_array(folder: os.PathLike) -> np.ndarray:
 
     # Load and iterate through each frame file
     ctp_array = []
-    files = os.listdir(folder)
+    # Sort the files by frame index 
+    files = sorted(os.listdir(folder), key=lambda x: int(x.split('_t_')[-1].split('.')[0]))
     cont_img = 0
     for file in files:
         if ".nii.gz" in file:
@@ -212,7 +213,6 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
     # CTP loading and derivation of average frame
     ctp_array,image = extract_ctp_array(folder = os.path.join(folder,cid))
     avg_frame, avg_frame_image = extract_avg_frame(ctp=ctp_array, image=image, time=t)
-    # sitk.WriteImage(avg_frame_image, f"{cid}_sum.nii.gz")
     
     # MCA-ICA segmentation with TopCoW24 trained model, for bolus alignment
     # Check first if the AIF has already been computed before
@@ -220,7 +220,8 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
     if not(os.path.exists(aif_file)): 
         assert "mca_cpt" in list(cfg.keys()), f"'mca_cpt' key is unavailable in configuration"
         train_dir = cfg["mca_cpt"]
-        mca,_ = predictionAlgorithm(train_dir=train_dir, device=torch.device("cuda",0)).predict(image_ct=avg_frame_image)
+        assert ("tile_step_size" in list(cfg.keys())) and ("use_gaussian" in list(cfg.keys())) and ("use_mirroring" in list(cfg.keys())), f"'tile_step_size', 'use_gaussian', or 'use_mirroring' not in configuration"
+        mca,_ = predictionAlgorithm(train_dir=train_dir, device=torch.device("cuda",0), folds=(0,1,2,3,4), tile_step_size=cfg["tile_step_size"], use_gaussian=bool(cfg["use_gaussian"]), use_mirroring=bool(cfg["use_mirroring"])).predict(image_ct=avg_frame_image)
 
         # MCA-ICA mask is composed by output labels 4, 5, 6, and 7
         ica_segm = (mca == 4).astype(float) + (mca == 6).astype(float)
