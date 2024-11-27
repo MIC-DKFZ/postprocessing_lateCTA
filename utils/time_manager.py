@@ -184,6 +184,10 @@ def apply_weighted_moving_average(scan : np.ndarray, time_points : np.ndarray, w
     return smoothed_scan
 
 
+
+
+
+
 if __name__ == "__main__":
     pass
     """
