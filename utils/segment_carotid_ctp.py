@@ -81,6 +81,40 @@ def segment_ica(input_file : os.PathLike, outfile : os.PathLike):
 
 
 
+def segment_brain(img_file: os.PathLike):
+    """
+    Segment brain from file with TotalSegmentator
+
+
+    Params
+    ------
+    img_file : image to be segmented
+
+    Returns
+    -------
+    brain_segm : brain segmentation
+    skull_segm : skull segmentation
+
+    """
+    assert os.path.exists(img_file), f"Image file '{img_file}' does not exist"
+    input_img = nib.load(img_file)
+
+
+    # Read image also in SimpleITK
+    output_img = totalsegmentator(input_img)
+    segm = output_img.get_fdata()
+    
+    segm = np.swapaxes(segm, 0, -1)
+    brain_segm = (segm == 90).astype(np.int32)
+    skull_segm = (segm == 91).astype(np.int32)
+
+    return brain_segm, skull_segm
+
+
+
+
+
+
 folder = "/scratch/amartinezmora/raw_data/ctp/mrclean_late_30002"
 #outfile = "/scratch/amartinezmora/preprocessed/ctp/mrclean_late_30002_sum.nii.gz"
 outfile = "/scratch/amartinezmora/raw_data/ctp/mrclean_late_30002/mrclean_late_30002_t_20.nii.gz"
