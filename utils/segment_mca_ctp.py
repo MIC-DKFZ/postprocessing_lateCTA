@@ -8,11 +8,11 @@ import os
 
 
 class predictionAlgorithm:
-   def __init__(self, train_dir : os.PathLike, device = torch.device("cuda", 0)):
+   def __init__(self, train_dir : os.PathLike, device = torch.device("cuda", 0), folds : tuple = (0,1,2,3,4), tile_step_size : float = 0.5, use_gaussian : bool = True, use_mirroring : bool = True):
        self.predictor = nnUNetPredictor(
-           tile_step_size=0.5,
-           use_gaussian=True,
-           use_mirroring=True,
+           tile_step_size=tile_step_size,
+           use_gaussian=use_gaussian,
+           use_mirroring=use_mirroring,
            perform_everything_on_device=True,
            device=device,
            verbose=False,
@@ -21,7 +21,7 @@ class predictionAlgorithm:
        )
        self.predictor.initialize_from_trained_model_folder(
            train_dir,
-           use_folds=(0, 1, 2, 3, 4),
+           use_folds=folds,
            checkpoint_name="checkpoint_final.pth",
        )
 
@@ -47,6 +47,8 @@ class predictionAlgorithm:
            output_file_truncated=None,
            save_or_return_probabilities=True,
        )
+
+    # def predict_array(self, image_ct):
 
 
        return ret, probs
