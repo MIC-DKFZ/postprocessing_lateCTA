@@ -3,5 +3,8 @@
 "time_interp":"linear",
 "thr_prominence":20,
 "overwrite":"n",
-"time_delta_default":1.5}
+"time_delta_default":1.5,
+"use_gaussian":1,
+"use_mirroring":1,
+"tile_step_size":0.5}
 
