@@ -5,6 +5,8 @@ import argparse
 from loguru import logger
 from scipy.ndimage import binary_erosion, binary_opening
 from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
+from preprocessing import extract_ctp_array
 
 
 from utils.segment_carotid_ctp import segment_brain
@@ -110,16 +112,29 @@ def get_args():
 
 if __name__ == "__main__":
     # main(get_args())
-    file = "/scratch/amartinezmora/code/smoothed.npy"
-    image_file = "/scratch/amartinezmora/raw_data/mrclean_late_30002/mrclean_late_30002_t_00.nii.gz"
-    outfile = "/scratch/amartinezmora/code/cv_all.nii.gz"
-    brain_file = "/scratch/amartinezmora/code/brain.nii.gz"
-    skull_file = "/scratch/amartinezmora/code/skull.nii.gz"
-    vessel_file = "/scratch/amartinezmora/code/vessel.nii.gz"
+    file = "/scratch/amartinezmora/raw_data/mrclean_late_30003"
+    file_out = "/scratch/amartinezmora/code/mrclean_late_30003_smoothed.npy"
+    image_file = "/scratch/amartinezmora/raw_data/mrclean_late_30003/mrclean_late_30003_t_0.nii.gz"
+    outfile = "/scratch/amartinezmora/code/mrclean_late_30003_cv_all.nii.gz"
+    brain_file = "/scratch/amartinezmora/code/mrclean_late_30003_brain.nii.gz"
+    skull_file = "/scratch/amartinezmora/code/mrclean_late_30003_skull.nii.gz"
+    vessel_file = "/scratch/amartinezmora/code/mrclean_late_30003_vessel.nii.gz"
+    time_file = "/scratch/amartinezmora/code/mrclean_late_30003_time.nii.gz"
+    vein_file = "/scratch/amartinezmora/code/mrclean_late_30003_vein.nii.gz"
+    artery_file = "/scratch/amartinezmora/code/mrclean_late_30003_artery.nii.gz" 
+
+    if not(os.path.exists(file_out)):
+        ctp_data = extract_ctp_array(folder=file)
+        np.save(file_out, ctp_data)
+    else:
+        ctp_data = np.load(file_out)
 
     image = sitk.ReadImage(image_file)
+    spacing = image.GetSpacing()
+    resolution = np.prod(np.array(spacing))
 
-    ctp_data = np.load(file)
+    # Define temporal information  
+    time_resolution = 1.522
 
     # Segment brain from first frame of image
     if not(os.path.exists(brain_file)) or not(os.path.exists(skull_file)):
@@ -147,8 +162,9 @@ if __name__ == "__main__":
     cv_brain_max = cv_brain.max()
     cv[cv > cv_brain_max] = 0 
     cv[skull_segm > 0] = 0 # Discard skull also   
-    # cv *= brain_segm
     cv *= eroded
+    cv *= brain_segm
+
     
     # Save variation image 
     cv_image = sitk.GetImageFromArray(cv)
@@ -162,9 +178,52 @@ if __name__ == "__main__":
     centers = model.cluster_centers_
     # Consider the voxel values between the centroids and take the median 
     thr = centers.mean()
-    print(thr)
     vessel_segm = (cv >= thr).astype(float)
-    # vessel_segm = binary_opening(vessel_segm).astype(float)
+
+    print(vessel_segm.sum(), thr, centers, cv.min(), cv.max())
+    sys.exit()
+
     vessel_image = sitk.GetImageFromArray(vessel_segm)
     vessel_image.CopyInformation(image)
     sitk.WriteImage(vessel_image, vessel_file)
+
+    # Extract peak time information for the different segmented vessels
+    time_argmax = np.argmax(ctp_data, axis=0)*time_resolution
+    time_segm = vessel_segm*time_argmax
+
+    time_values = time_segm[vessel_segm > 0]
+    print(time_values.mean())
+
+    # Estimate approximate number of venous voxels 
+    #  (around 70% of the blood in the brain is in veins)   
+    # This is equivalent to taking the 30th percentile of the times  
+    thr_time = np.percentile(time_values.flatten(), 30)
+    
+
+    # model_time = KMeans(n_clusters=2, random_state=41)
+    # model_time.fit(time_values)
+    # centers_time = model_time.cluster_centers_
+    # thr_time = centers_time.mean()
+
+    # Define bin edges by resolution  # Width of each bin
+    # bins = np.arange(time_values.min(), time_values.max() + time_resolution, time_resolution)
+    # Plot the histogram
+    # plt.figure()
+    # plt.hist(time_values, bins=bins, color='blue', edgecolor='black', alpha=0.7) 
+    # plt.savefig("hist.png") 
+
+
+    time_image = sitk.GetImageFromArray(time_segm)
+    time_image.CopyInformation(image)
+    sitk.WriteImage(time_image, time_file)
+
+
+    vein_segm = time_segm >= thr_time
+    artery_segm = (time_segm < thr_time).astype(float)
+    vein_segm = binary_opening(vein_segm).astype(float)
+    artery_segm *= vessel_segm
+    print(artery_segm.sum(), vein_segm.sum())
+    vein_image = sitk.GetImageFromArray(vein_segm)
+    sitk.WriteImage(vein_image, vein_file)
+    artery_image = sitk.GetImageFromArray(artery_segm)
+    sitk.WriteImage(artery_image, artery_file)
