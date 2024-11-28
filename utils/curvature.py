@@ -30,6 +30,10 @@ def extract_inflection_points(x: np.ndarray, y : np.ndarray) -> np.ndarray:
 
     # filter inflection points before the curve's main maximum
     argmax = np.argmax(y)
+    if argmax == 0:
+        # Recompute in case that the argmax happens just at the beginning
+        argmax = np.argmax(y[1:]) + 1
+          
     inflection_points = inflection_points[inflection_points < argmax]
 
     # Consider the inflection point with the biggest second derivative
