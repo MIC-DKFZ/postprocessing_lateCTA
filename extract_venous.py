@@ -7,6 +7,7 @@ from scipy.ndimage import binary_erosion, binary_opening
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 from preprocessing import extract_ctp_array
+import math
 
 
 from utils.segment_carotid_ctp import segment_brain
@@ -124,7 +125,7 @@ if __name__ == "__main__":
     artery_file = "/scratch/amartinezmora/code/mrclean_late_30003_artery.nii.gz" 
 
     if not(os.path.exists(file_out)):
-        ctp_data = extract_ctp_array(folder=file)
+        ctp_data,_ = extract_ctp_array(folder=file)
         np.save(file_out, ctp_data)
     else:
         ctp_data = np.load(file_out)
@@ -175,13 +176,20 @@ if __name__ == "__main__":
     model = KMeans(n_clusters=2, random_state=42)
     info = cv_brain.reshape(-1, 1)
     model.fit(info)
-    centers = model.cluster_centers_
-    # Consider the voxel values between the centroids and take the median 
-    thr = centers.mean()
-    vessel_segm = (cv >= thr).astype(float)
+    centers = model.cluster_centers_.flatten()
 
-    print(vessel_segm.sum(), thr, centers, cv.min(), cv.max())
-    sys.exit()
+    # Obtain the size of the lower centroid, 
+    # any voxel with a variation > lower centroid is a vessel voxel
+    low_ind = np.argmin(centers)
+    labels = model.labels_.flatten()
+    info = info.flatten()
+    dist = np.abs(info[labels == low_ind] - centers[low_ind])
+    fwhm = 2*math.sqrt(math.log(2))*dist.std()
+    thr_cv = centers[low_ind] + fwhm 
+    vessel_segm = (cv > thr_cv)
+    vessel_segm = binary_opening(vessel_segm).astype(float)
+
+    print(thr_cv, vessel_segm.sum())
 
     vessel_image = sitk.GetImageFromArray(vessel_segm)
     vessel_image.CopyInformation(image)
@@ -191,18 +199,36 @@ if __name__ == "__main__":
     time_argmax = np.argmax(ctp_data, axis=0)*time_resolution
     time_segm = vessel_segm*time_argmax
 
-    time_values = time_segm[vessel_segm > 0]
+    time_values = time_segm[vessel_segm > 0].reshape(-1,1)
     print(time_values.mean())
+
+    time_image = sitk.GetImageFromArray(time_segm)
+    time_image.CopyInformation(image)
+    sitk.WriteImage(time_image, time_file)
 
     # Estimate approximate number of venous voxels 
     #  (around 70% of the blood in the brain is in veins)   
     # This is equivalent to taking the 30th percentile of the times  
     thr_time = np.percentile(time_values.flatten(), 30)
+    times = np.abs(np.unique(time_values) -thr_time)
+    times = times[times > 0] 
+    thr_time = np.min(times)+thr_time
+    print(thr_time)
     
+    """
+    model_time = KMeans(n_clusters=2, random_state=41)
+    model_time.fit(time_values)
+    centers_time = model_time.cluster_centers_.flatten()
+    low_ind = np.argmin(centers_time)
+    print(centers_time)
+    labels_time = model_time.labels_.flatten()
+    time_values = time_values.flatten()
+    dist = np.abs(time_values[labels_time == low_ind] - centers_time[low_ind])
+    fwhm = 2*math.sqrt(math.log(2))*dist.std()
+    """
 
-    # model_time = KMeans(n_clusters=2, random_state=41)
-    # model_time.fit(time_values)
-    # centers_time = model_time.cluster_centers_
+    #  thr_time = centers_time[low_ind] + fwhm
+
     # thr_time = centers_time.mean()
 
     # Define bin edges by resolution  # Width of each bin
@@ -213,14 +239,13 @@ if __name__ == "__main__":
     # plt.savefig("hist.png") 
 
 
-    time_image = sitk.GetImageFromArray(time_segm)
-    time_image.CopyInformation(image)
-    sitk.WriteImage(time_image, time_file)
+    
 
 
-    vein_segm = time_segm >= thr_time
+    vein_segm = (time_segm >= thr_time).astype(float)
     artery_segm = (time_segm < thr_time).astype(float)
-    vein_segm = binary_opening(vein_segm).astype(float)
+    # artery_segm = binary_opening(artery_segm).astype(float)
+    # vein_segm = binary_opening(vein_segm).astype(float)
     artery_segm *= vessel_segm
     print(artery_segm.sum(), vein_segm.sum())
     vein_image = sitk.GetImageFromArray(vein_segm)
