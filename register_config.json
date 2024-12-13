@@ -1,0 +1,5 @@
+{"overwrite":"n",
+ "default_val":-1024,
+ "metric":"AdvancedNormalizedCorrelation",
+ "method":"euler",
+ "threads":6}
