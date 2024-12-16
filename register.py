@@ -174,7 +174,7 @@ def execute_registration(cta_file : os.PathLike, ctp_folder : os.PathLike, out_f
         if modified_cta:
             new_cta_file = cta_file.split(".")[0] + "_mod.nii.gz"
             logger.info(f"Storing the newer version of the CTA: '{new_cta_file}'")
-            sitk.WriteImage(new_cta, new_cta_file)
+            sitk.WriteImage(cta_image, new_cta_file)
 
         logger.info(f"Time ellapsed: {time.time()-t1} sec")
 
