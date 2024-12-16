@@ -9,7 +9,7 @@ from loguru import logger
 from utils.load_save import load_data
 
 
-def register_frame(cta_image : sitk.Image, ctp_file : os.PathLike, out_folder : os.PathLike, p : dict, cfg : dict):
+def register_frame(cta_image : sitk.Image, ctp_file : os.PathLike, out_folder : os.PathLike, p : dict, cfg : dict) -> sitk.Image:
     """
     Register CTP file (moving) to CTA file (fixed)
     and store the results in an output folder
@@ -36,19 +36,48 @@ def register_frame(cta_image : sitk.Image, ctp_file : os.PathLike, out_folder : 
     # Set up output file
     outfile = os.path.join(out_folder, os.path.basename(ctp_file))
 
+
     # Execute registration, based on parameters and registration
-    transform_matrix = get_transformation_matrix(fixed=cta_image, 
-                                                 moving=ctp_image, 
-                                                 clipvalue=[None, None], 
-                                                 parameters=p)
+    new_cta = None # New registered CTA image in case that there are issues with the old CTA image
+    try:
+        transform_matrix = get_transformation_matrix(fixed=cta_image, 
+                                                    moving=ctp_image, 
+                                                    clipvalue=[None, None], 
+                                                    parameters=p)
+    except:
+        logger.info("There was an error, registering first CTA to CTP...")
+
+        transform_matrix = get_transformation_matrix(fixed=ctp_image, 
+                                                    moving=cta_image, 
+                                                    clipvalue=[None, None], 
+                                                    parameters=p)
+        
+        new_cta = apply_transformation(transform_matrix, 
+                                             moving=cta_image, 
+                                             segmentation=False, 
+                                             default_pixel=cfg["default_val"])
+        new_cta.CopyInformation(ctp_image)
+        
+
+        transform_matrix = get_transformation_matrix(fixed=new_cta, 
+                                                    moving=ctp_image, 
+                                                    clipvalue=[None, None], 
+                                                    parameters=p)
+        
     transformed_image = apply_transformation(transform_matrix, 
                                              moving=ctp_image, 
                                              segmentation=False, 
                                              default_pixel=cfg["default_val"])
-    transformed_image.CopyInformation(cta_image)
+    
+    if new_cta is None:
+        transformed_image.CopyInformation(cta_image)
+    else:
+        transformed_image.CopyInformation(new_cta)
 
     # Save result
     sitk.WriteImage(transformed_image, outfile)
+
+    return new_cta
 
 
 
@@ -80,6 +109,7 @@ def extract_files_to_register(in_folder : os.PathLike, out_folder : os.PathLike,
             # Check if registration files already exist, and skip them
             input_ctp_files = np.array(sorted(os.listdir(in_folder)), dtype=str)
             output_ctp_files = np.array(sorted(os.listdir(out_folder)), dtype=str)
+            files_register = []
             if not(np.array_equal(input_ctp_files, output_ctp_files)):
                 # The case has been issued, but not all the frames have been registered
                 remaining_files = np.setdiff1d(input_ctp_files, output_ctp_files)
@@ -127,12 +157,23 @@ def execute_registration(cta_file : os.PathLike, ctp_folder : os.PathLike, out_f
         if not(os.path.exists(cid_out_folder)):
             os.makedirs(cid_out_folder)
         t1 = time.time()
+        new_cta = None
         for file in files_register:
-            register_frame(cta_image=cta_image, 
-                           ctp_file=file, 
-                           out_folder=cid_out_folder, 
-                           p=p, 
-                           cfg=cfg)
+  
+            new_cta = register_frame(cta_image=cta_image, 
+                        ctp_file=file, 
+                        out_folder=cid_out_folder, 
+                        p=p, 
+                        cfg=cfg)
+            
+            if new_cta is not None:
+                cta_image = new_cta
+                
+        if new_cta is not None:
+            new_cta_file = cta_file.split(".")[0] + "_mod.nii.gz"
+            logger.info(f"Storing the newer version of the CTA: '{new_cta_file}'")
+            sitk.WriteImage(new_cta, new_cta_file)
+            
         
         logger.info(f"Time ellapsed: {time.time()-t1} sec")
 
