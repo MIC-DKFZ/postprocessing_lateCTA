@@ -158,6 +158,7 @@ def execute_registration(cta_file : os.PathLike, ctp_folder : os.PathLike, out_f
             os.makedirs(cid_out_folder)
         t1 = time.time()
         new_cta = None
+        modified_cta = False # Whether the CTA was modified or not during the registration process, to save it later in disk
         for file in files_register:
   
             new_cta = register_frame(cta_image=cta_image, 
@@ -168,13 +169,13 @@ def execute_registration(cta_file : os.PathLike, ctp_folder : os.PathLike, out_f
             
             if new_cta is not None:
                 cta_image = new_cta
-                
-        if new_cta is not None:
+                modified_cta = True
+                      
+        if modified_cta:
             new_cta_file = cta_file.split(".")[0] + "_mod.nii.gz"
             logger.info(f"Storing the newer version of the CTA: '{new_cta_file}'")
             sitk.WriteImage(new_cta, new_cta_file)
-            
-        
+
         logger.info(f"Time ellapsed: {time.time()-t1} sec")
 
 
