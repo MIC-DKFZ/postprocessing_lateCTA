@@ -7,6 +7,9 @@ import time
 import argparse
 from loguru import logger
 from utils.load_save import load_data
+import matplotlib.pyplot as plt
+
+from preprocessing import extract_ctp_array
 
 
 def register_frame(cta_image : sitk.Image, ctp_file : os.PathLike, out_folder : os.PathLike, p : dict, cfg : dict) -> sitk.Image:
@@ -78,6 +81,81 @@ def register_frame(cta_image : sitk.Image, ctp_file : os.PathLike, out_folder : 
     sitk.WriteImage(transformed_image, outfile)
 
     return new_cta
+
+
+def check_suitability(cta_file : os.PathLike, ctp_folder : os.PathLike, outfile : os.PathLike):
+    """
+    Check correctness of CTP to CTA registration executed
+
+    Params
+    ------
+    cta_file : input CTA file
+    ctp_folder : input CTP folder
+    out : output folder
+    
+    """
+    # Obtain case ID 
+    cid = os.path.basename(cta_file).replace(".nii.gz", "")
+
+    # Obtain corresponding CTP folder
+    ctp_subfolder = os.path.join(ctp_folder, cid) 
+
+    assert os.path.exists(ctp_subfolder), f"CTP folder for case '{cid}' does not exist"
+    assert os.path.exists(cta_file), f"CTA file '{cta_file}' does not exist"
+
+    # Extract 4D CTP data 
+    print(cid, ctp_subfolder, cta_file)
+    ctp_img, ctp_image = extract_ctp_array(folder = ctp_subfolder)
+
+    # Obtain temporal MIP
+    avg_frame = temporal_mip(ctp = ctp_img)
+    avg_image = sitk.GetImageFromArray(avg_frame)
+    avg_image.CopyInformation(ctp_image)
+
+    # Read CTA file 
+    cta_image = sitk.ReadImage(cta_file)
+    cta_img = sitk.GetArrayFromImage(cta_image)
+
+
+    # Obtain medium slices plot
+    plt.figure()
+    images = [avg_image, cta_image] # Image objects  
+    imgs = [avg_frame, cta_img] # Image arrays   
+    i = 0  
+    for image,img in zip(images, imgs):
+        img = np.squeeze(img)
+        plt.subplot(2,3,i+1)
+        plt.imshow(img[img.shape[0]//2], cmap="gray")
+        plt.title(image.GetSpacing())
+        plt.colorbar()
+        plt.subplot(2,3,i+2)
+        plt.imshow(img[:,img.shape[1]//2], cmap="gray")
+        plt.title(image.GetOrigin())
+        plt.colorbar()
+        plt.subplot(2,3,i+3)
+        plt.imshow(img[:,:,img.shape[2]//2], cmap="gray")
+        plt.title(image.GetDirection())
+        plt.colorbar()
+        i += 3
+
+    plt.savefig(outfile)
+
+
+def temporal_mip(ctp : np.ndarray) -> np.ndarray:
+    """
+    Extract average frame from CTP (AKA temporal MIP)
+
+    Params
+    ------
+    ctp : perfusion scan array
+
+    Returns
+    -------
+    avg_frame : average frame array
+    
+    """
+
+    return np.mean(ctp, axis=0)
 
 
 
@@ -195,7 +273,7 @@ def main(args):
 
     # Set up logfile
     logfile = os.path.join(os.path.dirname(out_folder),"register.log")
-    logger.add(logfile, level="INFO")
+    # logger.add(logfile, level="INFO")
 
     # Load config
     config_file = "register_config.json"
@@ -217,11 +295,25 @@ def main(args):
     for cta_file in cta_files:
         if ".nii.gz" in cta_file:
             full_cta_file = os.path.join(cta_folder, cta_file)
+            """
             execute_registration(cta_file=full_cta_file, 
                                 ctp_folder=ctp_folder, 
                                 out_folder=out_folder, 
                                 cfg=cfg, 
                                 p=p)
+            """
+            outfile = os.path.join(out_folder, 
+                                   f"{cta_file.replace('.nii.gz','')}.png")
+            if not(os.path.exists(outfile)):
+                # Obtain case ID 
+                cid = os.path.basename(cta_file).replace(".nii.gz", "")
+
+                # Obtain corresponding CTP folder
+                ctp_subfolder = os.path.join(out_folder, cid) 
+                if os.path.exists(ctp_subfolder):
+                    check_suitability(cta_file=full_cta_file, 
+                                    ctp_folder=out_folder, 
+                                    outfile=outfile)
 
 
 def get_args():
