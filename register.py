@@ -273,7 +273,7 @@ def main(args):
 
     # Set up logfile
     logfile = os.path.join(os.path.dirname(out_folder),"register.log")
-    # logger.add(logfile, level="INFO")
+    logger.add(logfile, level="INFO")
 
     # Load config
     config_file = "register_config.json"
@@ -295,13 +295,12 @@ def main(args):
     for cta_file in cta_files:
         if ".nii.gz" in cta_file:
             full_cta_file = os.path.join(cta_folder, cta_file)
-            """
             execute_registration(cta_file=full_cta_file, 
                                 ctp_folder=ctp_folder, 
                                 out_folder=out_folder, 
                                 cfg=cfg, 
                                 p=p)
-            """
+            
             outfile = os.path.join(out_folder, 
                                    f"{cta_file.replace('.nii.gz','')}.png")
             if not(os.path.exists(outfile)):
@@ -314,6 +313,7 @@ def main(args):
                     check_suitability(cta_file=full_cta_file, 
                                     ctp_folder=out_folder, 
                                     outfile=outfile)
+            
 
 
 def get_args():
