@@ -7,3 +7,4 @@
 *.png
 utils/__pycache__/load_save.cpython-310.pyc
 utils/__pycache__/segment_mca_ctp.cpython-310.pyc
+*utils/__pycache__/.pyc
