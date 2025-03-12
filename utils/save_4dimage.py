@@ -23,15 +23,19 @@ def npy2nii(npy : np.ndarray, image : sitk.Image, out : os.PathLike):
         frame_image = sitk.GetImageFromArray(npy[i])
         frame_image.CopyInformation(image)
         frames.append(frame_image)
-    series = sitk.JoinSeries(frames)
 
+    # Create a JoinSeries object
+    join_series = sitk.JoinSeriesImageFilter()
+
+    # Combine slices into a 4D volume
+    series = join_series.Execute(frames)
     
     sitk.WriteImage(series, out)
 
 if __name__ == "__main__":
-    file = "/scratch/amartinezmora/code/smoothed.npy"
+    file = "/scratch/amartinezmora/code/resampled.npy"
     image_file = "/scratch/amartinezmora/raw_data/ctp/mrclean_late_30002/mrclean_late_30002_t_00.nii.gz"
-    out = "/scratch/amartinezmora/code/smoothed.nii.gz"
+    out = "/scratch/amartinezmora/code/resampled.nii.gz"
 
     image = sitk.ReadImage(image_file)
 

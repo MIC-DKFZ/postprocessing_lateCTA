@@ -96,7 +96,7 @@ def extract_time_resolution(folder : os.PathLike, time_folder : os.PathLike, def
     return times, delta_t
 
 
-def resample_time(ctp_array : np.ndarray, times : np.ndarray, delta_t : float, interp_type : str = "cubic") -> np.ndarray:
+def resample_time(ctp_array : np.ndarray, times : np.ndarray, delta_t : float, interp_type : str = "linear") -> Union[np.ndarray, np.ndarray]:
     """
     Resample input CTP array to a certain time resolution
     given the time indexes of the given case
@@ -106,18 +106,24 @@ def resample_time(ctp_array : np.ndarray, times : np.ndarray, delta_t : float, i
     ctp_array : input CTP
     times : time points of input CTP
     delta_t : time resolution
-    interp_type : type of interpolation (default: "cubic")
+    output : folder where to store array with resampled times
+    cid : case ID of interest being analyzed
+    interp_type : type of interpolation (default: "linear")
     
     Returns
     -------
     resampled : CTP array resampled to a certain time resolution
+    new_times : new time points obtained after scan resampling
 
     """
     new_times = np.arange(times.min(), times.max(), delta_t)
 
+    logger.info(f"Times to resample to: {new_times}")
+
+    # Apply resampling 
     interpolator = interp1d(times, ctp_array, kind=interp_type, axis=0, fill_value="extrapolate")
     resampled = interpolator(new_times)
-    return resampled
+    return resampled, new_times
 
 
 def apply_weighted_moving_average(scan : np.ndarray, time_points : np.ndarray, window_size : int = 3):
