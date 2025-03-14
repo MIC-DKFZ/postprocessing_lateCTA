@@ -2,6 +2,7 @@ import pandas as pd
 import os,sys
 import numpy as np
 import argparse
+# import matplotlib.pyplot as plt
 import shutil
 
 def extract_defective_ids(qa_df : pd.DataFrame) -> list:
@@ -20,8 +21,9 @@ def extract_defective_ids(qa_df : pd.DataFrame) -> list:
     """
     ids = qa_df.iloc[:,0].values.astype(str) 
     minimum_corr = qa_df.iloc[:,-3].values
-    ind = np.where(minimum_corr < 0.8)[0] 
+    ind = np.where(minimum_corr < 0.85)[0] 
     defective_ids = ids[ind]
+
     return defective_ids 
 
 
@@ -39,22 +41,23 @@ def main(args):
     # Obtain defective IDs
     defective_ids = extract_defective_ids(qa_df=qa_df)
 
-    """
+    
     for i in defective_ids:
         in_folder = "/scratch/amartinezmora/raw_data/ctp_time"
         out_folder = "/scratch/amartinezmora/raw_data/temp"
         file = os.path.join(in_folder, f"{i}_AcquisitionDateTime.npy")
         outfile = os.path.join(out_folder, f"{i}_AcquisitionDateTime.npy")
-        try:
+        if os.path.exists(file):
             shutil.move(file, outfile)
-        except:
+        else:
             file = os.path.join(in_folder, f"{i}_AcquisitionTime.npy")
-            outfile = os.path.join(out_folder, f"{i}_AcquisitionTime.npy")
-            shutil.move(file, outfile)
-    """
+            if os.path.exists(file):
+                outfile = os.path.join(out_folder, f"{i}_AcquisitionTime.npy")
+                shutil.move(file, outfile)
+    
 
     # Save resulting file
-    np.savetxt(out, defective_ids, fmt="%s")    
+  #  np.savetxt(out, defective_ids, fmt="%s")    
 
 
 def get_args():
