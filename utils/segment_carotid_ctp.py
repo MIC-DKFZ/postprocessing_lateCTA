@@ -81,14 +81,14 @@ def segment_ica(input_file : os.PathLike, outfile : os.PathLike):
 
 
 
-def segment_brain(img_file: os.PathLike):
+def segment_brain(img : np.ndarray):
     """
-    Segment brain from file with TotalSegmentator
+    Segment brain and skull from image with TotalSegmentator
 
 
     Params
     ------
-    img_file : image to be segmented
+    img : image to be segmented
 
     Returns
     -------
@@ -96,12 +96,15 @@ def segment_brain(img_file: os.PathLike):
     skull_segm : skull segmentation
 
     """
+    print(img.shape)
+    img_file = "/scratch/amartinezmora/preprocessed/ctp/R2717/R2717_t_00.nii.gz"
     assert os.path.exists(img_file), f"Image file '{img_file}' does not exist"
-    input_img = nib.load(img_file)
-
+    img = nib.load(img_file)
+    print(img.shape)
+    sys.exit()
 
     # Read image also in SimpleITK
-    output_img = totalsegmentator(input_img)
+    output_img = totalsegmentator(img)
     segm = output_img.get_fdata()
     
     segm = np.swapaxes(segm, 0, -1)
