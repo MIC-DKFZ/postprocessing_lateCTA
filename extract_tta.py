@@ -6,12 +6,12 @@ from loguru import logger
 from scipy.ndimage import binary_opening
 from sklearn.cluster import KMeans
 import math
-
+import nibabel as nib
+from typing import Union
 
 from utils.load_save import load_data
 from preprocessing import extract_ctp_array, extract_avg_frame
-from utils.segment_carotid_ctp import segment_brain
-# from utils.segment_mca_ctp import predictionAlgorithm
+from utils.segment_carotid_ctp import segment_brain, segment_ica
 
 
 def get_variation_image(array : np.ndarray) -> np.ndarray:
@@ -57,7 +57,7 @@ def binarize_variation_image(cv_img : np.ndarray, cfg : dict) -> np.ndarray:
     bin_img : binarized image
 
     """
-    assert ("n_clusters" in list(cfg.keys())) and ("state" in list(cfg.keys())) and ("opening_iters" in list(cfg.keys())), "Keys 'n_clusters' and/or 'state' not in configuration"
+    assert ("n_clusters" in list(cfg.keys())) and ("state" in list(cfg.keys())) and ("opening_iters" in list(cfg.keys())), "Keys 'n_clusters' and/or 'state' and/or 'opening_iters' not in configuration"
     # Apply k-means thresholding to isolate high variation information
     model = KMeans(n_clusters=2, random_state=42)
     info = cv_img.reshape(-1, 1)
@@ -129,6 +129,63 @@ def extract_cta_array(cta_folder : os.PathLike, cid : str) -> np.ndarray:
     cta_array = sitk.GetArrayFromImage(cta_image)
     return cta_image, cta_array
 
+
+def segment_brain_components(cta_folder : os.PathLike, segm_folder : os.PathLike, image, cid : str) -> Union[np.ndarray, np.ndarray, np.ndarray, np.ndarray] :
+    """
+    Segment different organ components in the brain, on the CTA image
+
+    Params
+    ------
+    cta_folder : folder with CTA information
+    segm_folder : folder where to store resulting segmentations
+    image : reference SimpleITK image used to store information
+    cid : case ID of interest
+
+    Returns
+    -------
+    brain_segm : brain segmentation
+    skull_segm : skull segmentation
+    cca_segm : common carotid artery segmentation
+    ica_segm : internal carotid artery segmentation
+    
+    """
+
+    # Obtain skull and brain segmentation with TotalSegmentator
+    skull_file = os.path.join(segm_folder, f"{cid}_skull.nii.gz")
+    brain_file = os.path.join(segm_folder, f"{cid}_brain.nii.gz")
+    cca_file = os.path.join(segm_folder, f"{cid}_cca.nii.gz")
+    ica_file = os.path.join(segm_folder, f"{cid}_ica.nii.gz")
+    logger.info("Deriving segmentation of brain components...")
+    if not(os.path.exists(skull_file)) or not(os.path.exists(brain_file)) or not(os.path.exists(cca_file)) or not(os.path.exists(ica_file)):
+        # Derive skull segmentation from CTA image
+        cta_file = os.path.join(cta_folder, f"{cid}.nii.gz")
+        cta_image = nib.load(cta_file)
+        brain_segm, skull_segm, cca_segm = segment_brain(img = cta_image) 
+        ica_segm = segment_ica(img = cta_image)
+        skull_segm_image = sitk.GetImageFromArray(skull_segm)
+        skull_segm_image.CopyInformation(image)
+        brain_segm_image = sitk.GetImageFromArray(brain_segm)
+        brain_segm_image.CopyInformation(image)
+        cca_segm_image = sitk.GetImageFromArray(cca_segm)
+        cca_segm_image.CopyInformation(image)
+        cca_segm_image = sitk.GetImageFromArray(cca_segm)
+        cca_segm_image.CopyInformation(image)
+        ica_segm_image = sitk.GetImageFromArray(ica_segm)
+        ica_segm_image.CopyInformation(image)
+        sitk.WriteImage(skull_segm_image, skull_file)
+        sitk.WriteImage(brain_segm_image, brain_file)
+        sitk.WriteImage(cca_segm_image, cca_file)
+        sitk.WriteImage(ica_segm_image, ica_file)
+    else:
+        # Load segmentations from disk 
+        skull_segm = sitk.GetArrayFromImage(sitk.ReadImage(skull_file))
+        brain_segm = sitk.GetArrayFromImage(sitk.ReadImage(brain_file))
+        ica_segm = sitk.GetArrayFromImage(sitk.ReadImage(ica_file))
+        cca_segm = sitk.GetArrayFromImage(sitk.ReadImage(cca_file))
+
+    return brain_segm, skull_segm, cca_segm, ica_segm
+
+
 def derive_tta(ctp_array : np.ndarray, time_array : np.ndarray) -> np.ndarray:
     """
     Obtain Time To Arrival (TTA) image from CTP information
@@ -143,12 +200,14 @@ def derive_tta(ctp_array : np.ndarray, time_array : np.ndarray) -> np.ndarray:
     tta_img : TTA image
     
     """
+
     time_argmax = np.argmax(ctp_array, axis=0)
     tta_img = time_array[time_argmax]
+
     return tta_img 
 
 
-def cta_masking(cta_array : np.ndarray, avg_ctp_array : np.ndarray, image, out_cta_folder : os.PathLike, cid : str):
+def cta_masking(cta_array : np.ndarray, variation_img : np.ndarray, image, out_cta_folder : os.PathLike, cid : str):
     """
     Remove slices in the CTA scan that are missing in the 
     CTP information
@@ -156,16 +215,16 @@ def cta_masking(cta_array : np.ndarray, avg_ctp_array : np.ndarray, image, out_c
     Params
     ------
     cta_array : input CTA scan
-    avg_ctp_array : average frame of CTP scan
+    variation_img : variation image
     image : corresponding CTA image in SimpleITK format
     out_cta_folder : folder where to store resulting masked CTA scan
     cid : case ID of interest
 
     """
     # Get slices in average CTP frame scan where 
-    # the mean value is over -1024 (to be masked in the CTA) 
-    mean_slice = np.mean(avg_ctp_array, axis = 0)
-    ind_remove = np.where(mean_slice == -1024)[0]
+    # the mean value is over 0 (to be masked in the CTA) 
+    mean_slice = np.mean(variation_img, axis = (1,2))
+    ind_remove = np.where(mean_slice == 0)[0]
 
     # Mask input CTA information 
     masked_cta =  cta_array.copy()
@@ -203,8 +262,8 @@ def separate_arterial_venous(tta_img : np.ndarray, cfg : dict, image, out : os.P
         # of the cerebral vessel volume is venous and the rest is arterial 
         assert "percentile" in list(cfg.keys()), "'percentile' key not in configuration"
         perc = cfg["percentile"]
-        # Consider only TTA values in high-variation regions            
-        thr_time = np.min(time_values) + np.percentile(time_values, 100-perc)
+        # Consider only TTA values in high-variation regions         
+        thr_time = time_values.min() + np.percentile(time_values, 100-perc)
     elif method.lower().strip() == "kmeans":
         # Artery-vein separation with k-means 
         logger.info("Artery-vein separation based on k-means")
@@ -280,38 +339,53 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     logger.info("Obtain variation image from preprocessed CTP scan...")
     variation_img = get_variation_image(array = ctp_array)
 
-    assert "segment_skull" in list(cfg.keys()), "Key 'segment_skull' not in configuration keys"
-    do_segm_skull = cfg["segment_skull"]
+    assert "segment_skull_brain" in list(cfg.keys()), "Key 'segment_skull_brain' not in configuration keys"
+    do_segm_skull_brain = cfg["segment_skull_brain"]
 
-    if do_segm_skull == 1: 
-        # Obtain skull segmentation with totalsegmentator
-        skull_file = os.path.join(skull_folder, f"{cid}_skull.nii.gz")
-        logger.info("Deriving skull segmentation...")
-        if not(os.path.exists(skull_file)):
-            # Derive skull segmentation
-            _, skull_segm = segment_brain(img = ctp_array[0]) 
-            skull_segm_image = sitk.GetImageFromArray(skull_segm)
-            skull_segm_image.CopyInformation(image)
-            sitk.WriteImage(skull_segm_image, skull_file)
-        else:
-            # Load image from disk 
-            skull_segm = sitk.GetArrayFromImage(sitk.ReadImage(skull_file))
+    if do_segm_skull_brain == 1: 
+        # Obtain segmentations of brain components (brain, skull, common carotid artery, internal carotid artery) 
+        brain_segm, skull_segm, cca_segm, ica_segm = segment_brain_components(cta_folder=cta_folder,
+                                                                              segm_folder = skull_folder,
+                                                                              image=image,
+                                                                              cid=cid)
 
         # Discard potential skull information from variation image 
         variation_img *= (1 - skull_segm) 
+
+    # Ignore the first and last slices of the variation image
+    assert "trim" in list(cfg.keys()), "Key 'trim' not present in configuration"
+    trim = cfg["trim"]
+    if trim > 0:
+        logger.info("Trimming variation image...")
+        variation_img[:trim] = 0 # Top trimming 
+        variation_img[(-trim):] = 0 # Bottom trimming  
 
     # Isolate zones with high variation in the variation image 
     # (pseudo-vessel segmentation image)
     logger.info("Binarizing variation image...")
     bin_var_img = binarize_variation_image(cv_img = variation_img, cfg=cfg) 
 
+    if do_segm_skull_brain:
+        # Restrict variation image to the brain and the carotid arteries
+        variation_mask = ((brain_segm + cca_segm + ica_segm) > 0).astype(np.int32)
+        bin_var_img *= variation_mask
+
+    # Store binary variation image
+    bin_var_image = sitk.GetImageFromArray(bin_var_img)
+    bin_var_image.CopyInformation(avg_frame_image)
+    bin_file = os.path.join(out, f"{cid}_bin.nii.gz")
+    sitk.WriteImage(bin_var_image, bin_file)
+
     # Obtain time-to-arrival image 
     logger.info("Deriving TTA image...")
-    tta_img = derive_tta(ctp_array=ctp_array) 
+    tta_img = derive_tta(ctp_array=ctp_array, time_array=time_array) 
 
     # Restrict TTA image to zones of high variation only
     logger.info("Restricting TTA image to zones of high variation...")
     tta_img *= bin_var_img
+    
+    # Normalizing image
+    tta_img = (tta_img - tta_img.min())/(tta_img.max() - tta_img.min())
 
     # Store TTA image
     logger.info("Storing TTA image...")
@@ -334,7 +408,7 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     do_cta_mask = cfg["cta_mask"]
     if do_cta_mask == 1: 
         logger.info("Masking CTA slices that are not present in TTA image...")
-        cta_masking(cta_array=cta_array, avg_ctp_array = avg_frame, 
+        cta_masking(cta_array=cta_array, variation_img = variation_img, 
                     image=cta_image, out_cta_folder=out_cta, cid=cid) 
       
 
@@ -355,7 +429,7 @@ def main(args):
     assert os.path.exists(os.path.dirname(out)), f"Parent output folder '{out}' does not exist"
 
     # Set up configuration file
-    cfg_file = os.path.join(os.path.dirname(__file__), "tta_config.json") 
+    cfg_file = os.path.join(os.path.dirname(__file__), "config_tta.json") 
     assert os.path.exists(cfg_file), f"Configuration file '{cfg_file}' does not exist"
     cfg = load_data(cfg_file)
 
@@ -391,8 +465,9 @@ def main(args):
         if not(os.path.exists(outfile)) or cfg["overwrite"].lower().strip() == "y": 
             logger.info(f"Processing case ID: {cid}")
             cid_folder = os.path.join(ctp_folder, cid)
-            case_analysis(folder = cid_folder, time_folder = time_folder, skull_folder = skull_folder, out = out, cid = cid, cfg = cfg)
-
+            case_analysis(folder = cid_folder, time_folder = time_folder, 
+                          skull_folder = skull_folder, cta_folder = cta_folder, 
+                          out = out, out_cta=out_cta_folder, cid = cid, cfg = cfg)
 
 
 
@@ -411,144 +486,3 @@ def get_args():
 
 if __name__ == "__main__":
     main(get_args())
-    """
-    file = "/scratch/amartinezmora/raw_data/mrclean_late_30003"
-    file_out = "/scratch/amartinezmora/code/mrclean_late_30003_smoothed.npy"
-    image_file = "/scratch/amartinezmora/raw_data/mrclean_late_30003/mrclean_late_30003_t_0.nii.gz"
-    outfile = "/scratch/amartinezmora/code/mrclean_late_30003_cv_all.nii.gz"
-    brain_file = "/scratch/amartinezmora/code/mrclean_late_30003_brain.nii.gz"
-    skull_file = "/scratch/amartinezmora/code/mrclean_late_30003_skull.nii.gz"
-    vessel_file = "/scratch/amartinezmora/code/mrclean_late_30003_vessel.nii.gz"
-    time_file = "/scratch/amartinezmora/code/mrclean_late_30003_time.nii.gz"
-    vein_file = "/scratch/amartinezmora/code/mrclean_late_30003_vein.nii.gz"
-    artery_file = "/scratch/amartinezmora/code/mrclean_late_30003_artery.nii.gz" 
-
-    if not(os.path.exists(file_out)):
-        ctp_data,_ = extract_ctp_array(folder=file)
-        np.save(file_out, ctp_data)
-    else:
-        ctp_data = np.load(file_out)
-
-    image = sitk.ReadImage(image_file)
-    spacing = image.GetSpacing()
-    resolution = np.prod(np.array(spacing))
-
-    # Define temporal information  
-    time_resolution = 1.522
-
-    # Segment brain from first frame of image
-    if not(os.path.exists(brain_file)) or not(os.path.exists(skull_file)):
-        brain_segm, skull_segm = segment_brain(img_file = image_file) 
-        brain_image = sitk.GetImageFromArray(brain_segm)
-        brain_image.CopyInformation(image)
-        sitk.WriteImage(brain_image, brain_file)
-        skull_image = sitk.GetImageFromArray(skull_segm)
-        skull_image.CopyInformation(image)
-        sitk.WriteImage(skull_image, skull_file)
-    else:
-        # If brain segmentation exists, load it  
-        brain_segm = sitk.GetArrayFromImage(sitk.ReadImage(brain_file))
-        skull_segm = sitk.GetArrayFromImage(sitk.ReadImage(skull_file))
-    
-    # Derive coefficient of variation image
-    cv = get_variation_image(array = ctp_data) 
-
-    # Binarize CV image to erode it and remove edge values
-    # with issues caused by alignment artifacts through time
-    bin_cv = cv > 0.01
-    eroded = binary_erosion(bin_cv, iterations=3).astype(float)
-    # Derive brain values, to get the maximum CV value in the brain
-    cv_brain = cv[brain_segm > 0]
-    cv_brain_max = cv_brain.max()
-    cv[cv > cv_brain_max] = 0 
-    cv[skull_segm > 0] = 0 # Discard skull also   
-    cv *= eroded
-    cv *= brain_segm
-
-    
-    # Save variation image 
-    cv_image = sitk.GetImageFromArray(cv)
-    cv_image.CopyInformation(image)
-    sitk.WriteImage(cv_image, outfile)
-
-    # Apply k-means thresholding to isolate vessel information
-    model = KMeans(n_clusters=2, random_state=42)
-    info = cv_brain.reshape(-1, 1)
-    model.fit(info)
-    centers = model.cluster_centers_.flatten()
-
-    # Obtain the size of the lower centroid, 
-    # any voxel with a variation > lower centroid is a vessel voxel
-    low_ind = np.argmin(centers)
-    labels = model.labels_.flatten()
-    info = info.flatten()
-    dist = np.abs(info[labels == low_ind] - centers[low_ind])
-    fwhm = 2*math.sqrt(math.log(2))*dist.std()
-    thr_cv = centers[low_ind] + fwhm 
-    vessel_segm = (cv > thr_cv)
-    vessel_segm = binary_opening(vessel_segm).astype(float)
-
-    print(thr_cv, vessel_segm.sum())
-
-    vessel_image = sitk.GetImageFromArray(vessel_segm)
-    vessel_image.CopyInformation(image)
-    sitk.WriteImage(vessel_image, vessel_file)
-
-    # Extract peak time information for the different segmented vessels
-    time_argmax = np.argmax(ctp_data, axis=0)*time_resolution
-    time_segm = vessel_segm*time_argmax
-
-    time_values = time_segm[vessel_segm > 0].reshape(-1,1)
-    print(time_values.mean())
-
-    time_image = sitk.GetImageFromArray(time_segm)
-    time_image.CopyInformation(image)
-    sitk.WriteImage(time_image, time_file)
-
-    # Estimate approximate number of venous voxels 
-    #  (around 70% of the blood in the brain is in veins)   
-    # This is equivalent to taking the 30th percentile of the times  
-    thr_time = np.percentile(time_values.flatten(), 30)
-    times = np.abs(np.unique(time_values) -thr_time)
-    times = times[times > 0] 
-    thr_time = np.min(times)+thr_time
-    print(thr_time)
-    
-
-    model_time = KMeans(n_clusters=2, random_state=41)
-    model_time.fit(time_values)
-    centers_time = model_time.cluster_centers_.flatten()
-    low_ind = np.argmin(centers_time)
-    print(centers_time)
-    labels_time = model_time.labels_.flatten()
-    time_values = time_values.flatten()
-    dist = np.abs(time_values[labels_time == low_ind] - centers_time[low_ind])
-    fwhm = 2*math.sqrt(math.log(2))*dist.std()
-
-    #  thr_time = centers_time[low_ind] + fwhm
-
-    # thr_time = centers_time.mean()
-
-    # Define bin edges by resolution  # Width of each bin
-    # bins = np.arange(time_values.min(), time_values.max() + time_resolution, time_resolution)
-    # Plot the histogram
-    # plt.figure()
-    # plt.hist(time_values, bins=bins, color='blue', edgecolor='black', alpha=0.7) 
-    # plt.savefig("hist.png") 
-
-
-    
-
-
-    vein_segm = (time_segm >= thr_time).astype(float)
-    artery_segm = (time_segm < thr_time).astype(float)
-    # artery_segm = binary_opening(artery_segm).astype(float)
-    # vein_segm = binary_opening(vein_segm).astype(float)
-    artery_segm *= vessel_segm
-    print(artery_segm.sum(), vein_segm.sum())
-    vein_image = sitk.GetImageFromArray(vein_segm)
-    sitk.WriteImage(vein_image, vein_file)
-    artery_image = sitk.GetImageFromArray(artery_segm)
-    sitk.WriteImage(artery_image, artery_file)
-
-    """

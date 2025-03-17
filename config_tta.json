@@ -1,4 +1,4 @@
-{"segment_skull" : 1,
+{"segment_skull_brain" : 1,
  "n_clusters" : 2,
  "state" : 42,
  "opening_iters" : 1,
@@ -8,5 +8,6 @@
  "separation_method" : "percentile",
  "percentile" : 70,
  "n_clusters_separation" : 2,
- "state_separation" : 41}
+ "state_separation" : 41,
+ "trim" : 3}
 

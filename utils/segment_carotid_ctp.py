@@ -4,6 +4,7 @@ from totalsegmentator.python_api import totalsegmentator
 import SimpleITK as sitk
 import nibabel as nib
 import xmltodict
+from typing import Union
 
 def sum_ctp(folder: os.PathLike, outfile : os.PathLike):
     """
@@ -38,22 +39,22 @@ def sum_ctp(folder: os.PathLike, outfile : os.PathLike):
     sitk.WriteImage(sum_image, outfile)
 
 
-def segment_ica(input_file : os.PathLike, outfile : os.PathLike):
+def segment_ica(img) -> np.ndarray:
     """
     Code to segment the Internal Carotid Artery with TotalSegmentator
 
     Params
     ------
-    input_file : image filepath with sum of all CTP frames
-    outfile : image filepath with segmentation of the ICA
+    img : input image to be segmented
+
+    Returns
+    -------
+    ica_segm : internal carotid artery segmentation
 
     """
-    # Load input image in nibabel and in SimpleITK
-    input_img = nib.load(input_file)
-    input_image = sitk.ReadImage(input_file)
 
     # Conduct segmentation
-    output_img = totalsegmentator(input_img, task="headneck_bones_vessels", nr_thr_resamp=6, nr_thr_saving=6)
+    output_img = totalsegmentator(img, task="headneck_bones_vessels", nr_thr_resamp=6, nr_thr_saving=6)
     segm = output_img.get_fdata()
     segm = np.swapaxes(segm, 0, -1)
 
@@ -75,15 +76,13 @@ def segment_ica(input_file : os.PathLike, outfile : os.PathLike):
     ica_left_segm = (segm == labels["internal_carotid_artery_left"]).astype(float)
 
     ica_segm = ((ica_left_segm + ica_right_segm) > 0).astype(float)
-    ica_segm_image = sitk.GetImageFromArray(ica_segm)
-    ica_segm_image.CopyInformation(input_image)
-    sitk.WriteImage(ica_segm_image, outfile)
+    return ica_segm
 
 
 
-def segment_brain(img : np.ndarray):
+def segment_brain(img : np.ndarray) -> Union[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Segment brain and skull from image with TotalSegmentator
+    Segment brain, skull and common carotid artery from image with TotalSegmentator
 
 
     Params
@@ -94,15 +93,10 @@ def segment_brain(img : np.ndarray):
     -------
     brain_segm : brain segmentation
     skull_segm : skull segmentation
+    cca_segm : common carotid artery segmentation
+    
 
     """
-    print(img.shape)
-    img_file = "/scratch/amartinezmora/preprocessed/ctp/R2717/R2717_t_00.nii.gz"
-    assert os.path.exists(img_file), f"Image file '{img_file}' does not exist"
-    img = nib.load(img_file)
-    print(img.shape)
-    sys.exit()
-
     # Read image also in SimpleITK
     output_img = totalsegmentator(img)
     segm = output_img.get_fdata()
@@ -110,8 +104,11 @@ def segment_brain(img : np.ndarray):
     segm = np.swapaxes(segm, 0, -1)
     brain_segm = (segm == 90).astype(np.int32)
     skull_segm = (segm == 91).astype(np.int32)
+    cca_left_segm = (segm == 57).astype(np.int32)
+    cca_right_segm = (segm == 58).astype(np.int32)
+    cca_segm = (cca_left_segm + cca_right_segm).astype(np.int32)
 
-    return brain_segm, skull_segm
+    return brain_segm, skull_segm, cca_segm
 
 
 
