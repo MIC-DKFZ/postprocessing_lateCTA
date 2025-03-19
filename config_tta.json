@@ -1,13 +1,16 @@
 {"segment_skull_brain" : 1,
- "n_clusters" : 2,
+ "n_clusters" : 3,
  "state" : 42,
  "opening_iters" : 1,
  "cta_mask" : 1,
  "overwrite" : "n",
  "separation" : "y",
- "separation_method" : "percentile",
+ "separation_method" : "kmeans",
  "percentile" : 70,
- "n_clusters_separation" : 2,
+ "n_clusters_separation" : 3,
  "state_separation" : 41,
- "trim" : 3}
+ "trim" : 3,
+ "erode_brain_iters" : 5,
+ "ctp_trimming" : 10,
+ "remove_thr" : 64}
 
