@@ -5,7 +5,7 @@ from scipy.interpolate import interp1d
 from loguru import logger
 
 
-def load_time(time_folder : os.PathLike, cid : str) -> np.ndarray:
+def load_time(time_folder : os.PathLike, cid : str) -> Union[np.ndarray, np.ndarray]:
     """
     Load time array information
 
@@ -17,6 +17,7 @@ def load_time(time_folder : os.PathLike, cid : str) -> np.ndarray:
     Returns
     -------
     t : time information for case of interest
+    time_info : time information matrix
     
     """
     assert os.path.exists(time_folder), f"Time folder '{time_folder}' does not exist"
@@ -37,7 +38,8 @@ def load_time(time_folder : os.PathLike, cid : str) -> np.ndarray:
     # Take time information from mid-slice and set the offset to zero
     t = time_info[time_info.shape[0] // 2]
     t -= t.min()
-    return t
+
+    return t, time_info
 
 
 
@@ -81,10 +83,12 @@ def extract_time_resolution(folder : os.PathLike, time_folder : os.PathLike, def
     times = {}
     resolutions = []
     for cid in cids:
-        times_cid = load_time(time_folder=time_folder, cid=cid)
+        times_cid, time_info = load_time(time_folder=time_folder, cid=cid)
         if times_cid is not None:
             times[cid] = times_cid
-            resolution = np.abs(np.diff(times[cid]))
+            # resolution = np.abs(np.diff(times[cid]))
+            diff = np.abs(np.diff(time_info, 1))
+            resolution = np.median(diff, 1)
             resolutions += resolution.tolist()
 
 
