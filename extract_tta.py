@@ -167,7 +167,7 @@ def detect_outliers_mad(data : np.ndarray, threshold : float =3.5):
     """
     median = np.median(data)
     mad = median_abs_deviation(data)
-    modified_z_scores = 0.6745 * (data - median) / mad
+    modified_z_scores = 0.6745 * (data - median) / (mad + np.finfo(float).eps)
     return np.where(modified_z_scores > threshold)[0]  # Indices of outliers
 
 
@@ -398,7 +398,7 @@ def cta_masking(cta_array : np.ndarray, low_slice : int, high_slice : int, image
 
     # Set up output filename and store resulting image
     out_filename = os.path.join(out_cta_folder, f"{cid}.nii.gz") 
-    masked_cta_image = sitk.GetImageFromArray(masked_cta)
+    masked_cta_image = sitk.GetImageFromArray(masked_cta.astype(np.float32))
     masked_cta_image.CopyInformation(image)
     sitk.WriteImage(masked_cta_image, out_filename)
 
