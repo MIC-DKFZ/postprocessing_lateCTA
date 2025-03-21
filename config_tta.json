@@ -5,12 +5,13 @@
  "cta_mask" : 1,
  "overwrite" : "n",
  "separation" : "y",
- "separation_method" : "kmeans",
+ "separation_method" : "percentile",
  "percentile" : 70,
  "n_clusters_separation" : 3,
  "state_separation" : 41,
  "trim" : 3,
  "erode_brain_iters" : 5,
  "ctp_trimming" : 10,
- "remove_thr" : 64}
+ "remove_thr" : 100,
+ "median_filter_size" : 5}
 
