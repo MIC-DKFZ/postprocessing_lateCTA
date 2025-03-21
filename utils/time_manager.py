@@ -85,7 +85,8 @@ def extract_time_resolution(folder : os.PathLike, time_folder : os.PathLike, def
     for cid in cids:
         times_cid, time_info = load_time(time_folder=time_folder, cid=cid)
         if times_cid is not None:
-            times[cid] = times_cid
+            # times[cid] = times_cid
+            times[cid] = time_info 
             # resolution = np.abs(np.diff(times[cid]))
             diff = np.abs(np.diff(time_info, 1))
             resolution = np.median(diff, 1)
@@ -107,6 +108,7 @@ def resample_time(ctp_array : np.ndarray, times : np.ndarray, delta_t : float, i
 
     Params
     ------
+    
     ctp_array : input CTP
     times : time points of input CTP
     delta_t : time resolution
@@ -120,14 +122,35 @@ def resample_time(ctp_array : np.ndarray, times : np.ndarray, delta_t : float, i
     new_times : new time points obtained after scan resampling
 
     """
-    new_times = np.arange(times.min(), times.max(), delta_t)
 
-    logger.info(f"Times to resample to: {new_times}")
+    resampled_arrays, resampled_times, time_frames = [], [] , [] 
 
-    # Apply resampling 
-    interpolator = interp1d(times, ctp_array, kind=interp_type, axis=0, fill_value="extrapolate")
-    resampled = interpolator(new_times)
-    return resampled, new_times
+    for i in range(ctp_array.shape[1]):
+        new_times = np.arange(times[i].min(), times[i].max(), delta_t)
+
+        # Apply resampling to the different slices in the Z direction 
+        interpolator = interp1d(times[i], ctp_array[:,i], kind=interp_type, axis=0, fill_value="extrapolate")
+        resampled = interpolator(new_times)
+        resampled_arrays.append(resampled)
+        resampled_times.append(new_times)
+        time_frames.append(resampled.shape[0])
+
+    # Determine if all slices are resampled to the same number of time frames
+    equal_time_frames = len(set(time_frames)) == 1 
+    if not(equal_time_frames):
+        min_frame = min(time_frames)
+        for i in range(ctp_array.shape[1]):
+            if time_frames[i] > min_frame:
+                # Crop the time frames obtained
+                resampled_times[i] = resampled_times[i][:min_frame]
+                resampled_arrays[i] = resampled_arrays[i][:min_frame]     
+
+
+    resampled_arrays = np.stack(resampled_arrays)
+    resampled_arrays = np.swapaxes(resampled_arrays, 0, 1)
+    resampled_times = np.stack(resampled_times)
+
+    return resampled_arrays, resampled_times
 
 
 def apply_weighted_moving_average(scan : np.ndarray, time_points : np.ndarray, window_size : int = 3):

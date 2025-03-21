@@ -64,9 +64,9 @@ def extract_avg_frame(ctp : np.ndarray, image, time: np.ndarray) -> np.ndarray:
     avg_frame_image : image with average frame information
     
     """
-    # Obtain average frame excluding the begining and end frames (exclude 10% of longer and shorter times)
-    exclude_t = time[-1]*0.1
-    time_inds_preserve = np.where((time > exclude_t) & (time < (time[-1]-exclude_t)))[0]
+    # Obtain average frame excluding the beginning and end frames (exclude 10% of longer and shorter times)
+    exclude_t = time.max()*0.1
+    time_inds_preserve = np.where((time[time.shape[0]//2] > exclude_t) & (time[time.shape[0]//2] < (time[time.shape[0]//2]-exclude_t)))[0]
 
     avg_frame = np.mean(ctp[time_inds_preserve], axis=0)
     avg_frame_image = sitk.GetImageFromArray(avg_frame)
@@ -75,7 +75,7 @@ def extract_avg_frame(ctp : np.ndarray, image, time: np.ndarray) -> np.ndarray:
     return avg_frame, avg_frame_image
 
 
-def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float, info: dict, t_secondary: float = None) -> Union[np.ndarray, np.ndarray, dict]:
+def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float, info: dict, t_secondary: float = None) -> Union[np.ndarray, np.ndarray, dict, np.ndarray]:
     """
     Trim CTP scan to only include frames during and after bolus
     arrival
@@ -93,6 +93,7 @@ def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float, info: dict, 
     trimmed_ctp : trimmed CTP scan for bolus arrival time
     trimmed_time : time vector trimmed by computed cutoff
     info : updated temporal information dictionary
+    bolus_inds : indexes of CTP array kept after trimming
 
     """
     # Derive bolus indexes
@@ -123,7 +124,7 @@ def trim_ctp(ctp_array : np.ndarray, t : np.ndarray, cutoff: float, info: dict, 
     trimmed_time -= trimmed_time.min()
 
 
-    return trimmed_ctp, trimmed_time, info
+    return trimmed_ctp, trimmed_time, info, bolus_inds
 
 
 def extract_cids(ctp_folder : os.PathLike, time_info : dict) -> np.ndarray:
@@ -152,7 +153,7 @@ def extract_cids(ctp_folder : os.PathLike, time_info : dict) -> np.ndarray:
 
 
 
-def extract_aif(ctp : np.ndarray, mask : np.ndarray) -> np.ndarray:
+def extract_aif(ctp : np.ndarray, mask : np.ndarray) -> Union[np.ndarray, int]:
     """
     Derive Arterial Input Function (AIF) for a certain CTP array,
     given a segmentation of the MCA-ICA
@@ -165,6 +166,7 @@ def extract_aif(ctp : np.ndarray, mask : np.ndarray) -> np.ndarray:
     Returns
     -------
     aif : AIF
+    bottom_slice : slice of reference where AIF is extracted
     
     """
 
@@ -207,7 +209,7 @@ def extract_aif(ctp : np.ndarray, mask : np.ndarray) -> np.ndarray:
     aif = np.nanmean(filtered_values, axis=1)
     """
 
-    return aif
+    return aif, bottom_slice
 
 
 def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : dict, t : np.ndarray, delta_t : float):
@@ -230,15 +232,16 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
         info = load_data(info_file)
     else:
         info = {}
-        info["original_times"] = t.tolist()   
+        # info["original_times"] = t.tolist()   
 
-    # CTP loading and derivation of average frame
+    # CTP loading and derivation of average frame for ICA/MCA derivation
     ctp_array,image = extract_ctp_array(folder = os.path.join(folder,cid))
     avg_frame, avg_frame_image = extract_avg_frame(ctp=ctp_array, image=image, time=t)
     
     # MCA-ICA segmentation with TopCoW24 trained model, for bolus alignment
     # Check first if the AIF has already been computed before
     out_mca = None # Initialize segmentation of the ICA and MCA arteries with TopCoW model 
+    aif_slice = ctp_array.shape[1] // 2 # Default slice from where AIF is extracted, if not provided otherwise 
     if not(os.path.exists(info_file)): 
         assert "mca_cpt" in list(cfg.keys()), f"'mca_cpt' key is unavailable in configuration"
         train_dir = cfg["mca_cpt"]
@@ -259,7 +262,7 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
             out_mca = (mca > 0).astype(float)
 
         # AIF derivation
-        aif = extract_aif(ctp=ctp_array, mask=out_mca)
+        aif, aif_slice = extract_aif(ctp=ctp_array, mask=out_mca)
 
         # Store AIF
         info["original_aif"] = aif.tolist() 
@@ -281,11 +284,11 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
     else:
         # Derive cutoff time where the bolus starts coming into 
         # the arteries with inflection points from AIF
-        cutoff = extract_inflection_points(x = t, y = aif)
+        cutoff = extract_inflection_points(x = t[aif_slice], y = aif)
         logger.info(f"Cutoff time: {cutoff} sec")
         # Derive if there exists secondary flow. 
         # If so, restrict the analysis before this secondary flow 
-        t_secondary = second_cycle(x = t, y = aif, 
+        t_secondary = second_cycle(x = t[aif_slice] , y = aif, 
                                 thr_prominence=cfg["thr_prominence"])
         
     if t_secondary is not None:
@@ -294,7 +297,7 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
 
     # Trim CTP array to only include frames after bolus arrival
     # and before any secondary flow 
-    ctp_array, t_trim, info = trim_ctp(ctp_array=ctp_array, t=t, 
+    ctp_array, t_trim, info, trimming_inds = trim_ctp(ctp_array=ctp_array, t=t[aif_slice], 
                             cutoff=cutoff,
                             info=info,
                             t_secondary=t_secondary)
@@ -303,8 +306,9 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
     
     # Resample to a fixed time resolution
     assert "time_interp" in list(cfg.keys()), "'time_interp' key not in configuration"
+    trimmed_time = t[:,trimming_inds] 
     resampled, resampled_times = resample_time(ctp_array=ctp_array, 
-                              times=t_trim, 
+                              times=trimmed_time, 
                               delta_t=delta_t,
                               interp_type=cfg["time_interp"])
     logger.info(f"Shape of resampled scan: {resampled.shape}")
@@ -313,28 +317,34 @@ def case_analysis(cid : str, folder : os.PathLike, output : os.PathLike, cfg : d
     assert "window" in list(cfg.keys()), "'window' key not in configuration"
     assert ctp_array.shape[0] > cfg["window"], "Trimmed and resampled CTP scans has less frames than the window specified for averaging"
     smoothed = apply_weighted_moving_average(scan=resampled,
-                                             time_points=resampled_times,
+                                             time_points=resampled_times[resampled_times.shape[0]//2] ,
                                              window_size=cfg["window"])
     logger.info(f"Shape of smoothed scan: {resampled.shape}")
 
     # Store AIF and time-related information 
-    if not(os.path.exists(info_file)):
-        info["cutoff"] = cutoff
-        if t_secondary is None:
-            info["t_secondary"] = "nan"
-        else:
-            info["t_secondary"] = t_secondary 
-        
-        info["resampled_times"] = resampled_times.tolist() 
+    # if not(os.path.exists(info_file)):
+    info["cutoff"] = cutoff
+    if t_secondary is None:
+        info["t_secondary"] = "nan"
+    else:
+        info["t_secondary"] = t_secondary 
+    
+    # info["resampled_times"] = resampled_times.tolist() 
+    # Store resampled time information
+    resampled_time_folder = os.path.join(os.path.dirname(output), "ctp_time")
+    if not(os.path.exists(resampled_time_folder)):
+        os.makedirs(resampled_time_folder)
+    resampled_time_file = os.path.join(resampled_time_folder, f"{cid}_AcquisitionDateTime.npy")
+    np.save(resampled_time_file, resampled_times)
 
-        # Save final AIF curve for resampled and smoothed scan
-        if out_mca is not None:
-            # AIF derivation
-            aif_final = extract_aif(ctp=smoothed, mask=out_mca)
-            info["final_aif"] = aif_final.tolist()
+    # Save final AIF curve for resampled and smoothed scan
+    if out_mca is not None:
+        # AIF derivation
+        aif_final, aif_final_slice = extract_aif(ctp=smoothed, mask=out_mca)
+        info["final_aif"] = aif_final.tolist()
 
-        # Save final information file
-        write_data(data = info, filename=info_file)
+    # Save final information file
+    write_data(data = info, filename=info_file)
 
     # Set up folder where to store preprocessed CTP data 
     output_cid = os.path.join(output, cid)
