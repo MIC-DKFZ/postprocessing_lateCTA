@@ -9,13 +9,14 @@ import nibabel as nib
 from typing import Union
 from skimage.morphology import remove_small_objects
 from scipy.stats import median_abs_deviation
+from scipy.ndimage import median_filter
 
 from utils.load_save import load_data
 from preprocessing import extract_ctp_array
 from utils.segment_carotid_ctp import segment_brain, segment_ica
 
 
-def get_variation_image(array : np.ndarray) -> np.ndarray:
+def get_variation_image(array : np.ndarray, image) -> np.ndarray:
     """
     Study coefficient of variation in array of interest
 
@@ -43,6 +44,17 @@ def get_variation_image(array : np.ndarray) -> np.ndarray:
     cv[cv >= 1] = 0 # Set extreme values to zero 
     cv = np.clip(cv,a_min = 0, a_max=1) # Complete clipping 
 
+    # For each frame in the CTP obtain non-background mask, sum them up, 
+    # and those regions with HU below -100 (around 900 in current array) can be discarded, 
+    # as they are probably non-vessel
+    mask = (array > 900).astype(np.float32)
+    mask = np.sum(mask, 0)
+    mask = (mask == mask.max()).astype(np.float32)
+
+
+    # Discard from the variation image those regions where not all the body gets aligned
+    cv *= mask 
+
     return cv
 
 def binarize_variation_image(cv_img : np.ndarray, cfg : dict) -> np.ndarray:
@@ -68,30 +80,34 @@ def binarize_variation_image(cv_img : np.ndarray, cfg : dict) -> np.ndarray:
     
     # Apply k-means thresholding to isolate high variation information
     model = KMeans(n_clusters=cfg["n_clusters"], 
-                   random_state=cfg["state"])
-    info = cv_img.reshape(-1, 1)
-    # Generate coordinate grid
+                   random_state=cfg["state"]) 
 
-    # Flatten coordinates and values
+    info = cv_img.reshape(-1, 1)
+     
     ind_keep = np.where(info > 0)[0]
     info = info[ind_keep]  
     model.fit(info)
     # Derive cluster centers 
     centers = model.cluster_centers_.flatten()
 
+    print(centers)
+
+    # Determine outliers: points beyond the last centroid + FWHM 
+
     # Obtain the size of the lower centroid, 
     # any voxel with a variation > lower centroid is a vessel voxel
-    low_ind = np.argsort(centers)[0] 
+    high_ind = np.argsort(centers)[-1] 
     medium_ind = np.argsort(centers)[1] 
 
     # Labels derived from k-means model 
-    # labels = model.labels_.flatten()
+    labels = model.labels_.flatten()
     info = info.flatten()
 
     # Compute intensity distance to lower cluster centroid in k-means 
     # dist = np.abs(info[labels == high_ind] - centers[high_ind])
     # Derive full-width half maximum (FWHM) of distances to lower k-means cluster centroid   
     # fwhm = 2*math.sqrt(math.log(2))*dist.std()
+
     # Set as threshold the FWHM of the distances 
     thr_cv = centers[medium_ind]
     
@@ -114,6 +130,8 @@ def binarize_variation_image(cv_img : np.ndarray, cfg : dict) -> np.ndarray:
     return bin_img
 
 
+
+
 def load_time(time_folder : os.PathLike, cid : str) -> np.ndarray:
     """
     Load time information for a certain case ID of interest
@@ -128,10 +146,13 @@ def load_time(time_folder : os.PathLike, cid : str) -> np.ndarray:
     time_array : loaded time information
     
     """
-    info_file = os.path.join(time_folder, f"{cid}.json")
-    info = load_data(info_file)
-    assert "resampled_times" in list(info.keys()), f"Key 'resampled times' not in file '{info_file}'"
-    return np.array(info["resampled_times"])
+    info_file = os.path.join(time_folder, f"{cid}_AcquisitionDateTime.npy")
+    assert os.path.exists(info_file), f"Time file '{info_file}' does not exist"
+
+    return np.load(info_file)
+    #  info = load_data(info_file)
+    # assert "resampled_times" in list(info.keys()), f"Key 'resampled times' not in file '{info_file}'"
+    # return np.array(info["resampled_times"])
 
 
 def detect_outliers_mad(data : np.ndarray, threshold : float =3.5):
@@ -212,6 +233,10 @@ def trim_ctp(ctp_array : np.ndarray, cfg : dict) -> Union[np.ndarray, int, int]:
     assert "ctp_trimming" in list(cfg.keys()), "'ctp_trimming' not in configuration keys"
     trim = cfg["ctp_trimming"]
     assert trim >= 0, f"Trim parameter is negative ({trim})" 
+
+    # Default extreme values
+    low_slice, high_slice = 0, ctp_array.shape[1]-1 
+     
     # Obtain slices with empty information 
     ctp_array_out = np.zeros(ctp_array.shape) - 1024 # Scan with -1024 values 
     maxima, minima = [],[]  
@@ -224,12 +249,8 @@ def trim_ctp(ctp_array : np.ndarray, cfg : dict) -> Union[np.ndarray, int, int]:
         minima.append(information_inds.min())
     # Obtain low and high slices with information
     low_slice, high_slice = max(minima) + trim, min(maxima) - trim
-
-    if low_slice >= high_slice:
-        # Too much trimming, return original scan, low slice as zero and high slice as last slice 
-        return ctp_array, 0, ctp_array.shape[1]-1 
     
-    # Determine if there are any additional acquisition artifacts inducing further image differences
+    # Determine if there are any additional acquisition artifacts inducing further CTP frame-wise differences
     mask_ctp_array = (ctp_array > -1024).astype(float)
 
     variation = []
@@ -238,24 +259,37 @@ def trim_ctp(ctp_array : np.ndarray, cfg : dict) -> Union[np.ndarray, int, int]:
         all_equal = np.all(mask_ctp_array[:,i] == 0)
         # Estimate differences for CTP information across frames
         if not(all_equal):
-            var = np.abs(mask_ctp_array[:,i] - mask_ctp_array[:,mask_ctp_array.shape[1]//2]).sum() / (mask_ctp_array[:,mask_ctp_array.shape[1]//2].sum() + np.finfo(float).eps)
+            # Normalize variation of slices in masked CTP 
+            # with volume for middle slice with information 
+            var = np.abs(mask_ctp_array[:,i] - mask_ctp_array[:,(low_slice + high_slice)//2]).sum() / (mask_ctp_array[:,(low_slice + high_slice)//2].sum() + np.finfo(float).eps)
         variation.append(var)
     variation = np.array(variation) 
-    outliers = detect_outliers_mad(variation)
-    low_slices = outliers[outliers < mask_ctp_array.shape[1]//2]
-    high_slices = outliers[outliers > mask_ctp_array.shape[1]//2]
 
-    # Determine extreme slices with outliers 
-    low_slice_outlier = low_slices.max()
-    high_slice_outlier = high_slices.min()
+    outliers = detect_outliers_mad(variation)
+
+    low_slices = outliers[outliers < (low_slice + high_slice)//2]
+    high_slices = outliers[outliers > (low_slice + high_slice)//2]
+
+    # Determine extreme slices with outliers
+    print(low_slice, high_slice, outliers) 
+    if low_slices.shape[0] > 0: 
+        # Recompute inferior extremes if there are any outliers 
+        low_slice_outlier = low_slices.max()
+        low_slice = max([low_slice, low_slice_outlier])
+
+    if high_slices.shape[0] > 0: 
+        # Recompute superior extremes if there are any outliers 
+        high_slice_outlier = high_slices.min()
+        high_slice = min([high_slice, high_slice_outlier])
+
+    if low_slice >= high_slice:
+        # Too much trimming, return original scan, low slice as zero and high slice as last slice 
+        return ctp_array, 0, ctp_array.shape[1]-1 
 
     # Further trim the CTP data if there are more outlier slices 
-    low_slice = max([low_slice, low_slice_outlier])
-    high_slice =min([high_slice, high_slice_outlier])
-    
     ctp_array_out[:,low_slice:high_slice] = ctp_array[:,low_slice:high_slice]
 
-    print(low_slice, high_slice, ctp_array.shape)
+    print(low_slice, high_slice)
 
     return ctp_array_out, low_slice, high_slice
 
@@ -331,9 +365,13 @@ def derive_tta(ctp_array : np.ndarray, time_array : np.ndarray) -> np.ndarray:
     tta_img : TTA image
     
     """
-
+    # Derive coordinates of maximum indexes reached 
     time_argmax = np.argmax(ctp_array, axis=0)
-    tta_img = time_array[time_argmax]
+
+    # Derive time resolution in preprocessed space: convert argmax to time coordinates
+    # Use middle Z slice resolution as output 
+    resolution_array = time_array[time_array.shape[0]//2] - time_array[time_array.shape[0]//2].min()
+    tta_img = resolution_array[time_argmax]
 
     return tta_img 
 
@@ -356,8 +394,7 @@ def cta_masking(cta_array : np.ndarray, low_slice : int, high_slice : int, image
     # Get slices in CTP scan that contain information and restrict the CTA
     # information to those slices
     masked_cta = np.zeros(cta_array.shape) - 1024
-    ind_keep = np.arange(low_slice, high_slice)
-    masked_cta[:,ind_keep] = cta_array[:,ind_keep]  
+    masked_cta[low_slice:high_slice] = cta_array[low_slice:high_slice]  
 
     # Set up output filename and store resulting image
     out_filename = os.path.join(out_cta_folder, f"{cid}.nii.gz") 
@@ -366,13 +403,15 @@ def cta_masking(cta_array : np.ndarray, low_slice : int, high_slice : int, image
     sitk.WriteImage(masked_cta_image, out_filename)
 
 
-def detect_slices_artifacts(img : np.ndarray) -> Union[float, float, np.ndarray]:
+def detect_slices_artifacts(img : np.ndarray, low_slice : int, high_slice : int) -> Union[float, float, np.ndarray]:
     """
     Detect artifacts in top and bottom slices
 
     Params
     ------
     img : input image
+    low_slice : previously computed extreme inferior slice
+    high_slice : previously computed extreme superior slice
 
     Returns
     -------
@@ -389,22 +428,28 @@ def detect_slices_artifacts(img : np.ndarray) -> Union[float, float, np.ndarray]
     outliers = detect_outliers_mad(std_slice)
 
     # Obtain inferior and superior slices with artifacts 
-    low_slices = outliers[outliers < img.shape[1]//2]
-    high_slices = outliers[outliers > img.shape[1]//2]
+    low_slices = outliers[outliers < (low_slice + high_slice)//2]
+    high_slices = outliers[outliers > (low_slice + high_slice)//2]
 
     # Determine if extreme slices are consecutive or not 
     low_consecutive = determine_if_consecutive(data=low_slices)
     high_consecutive = determine_if_consecutive(data=high_slices)
 
-    low_slice, high_slice = 0, img.shape[0]-1
+    low_slice_new, high_slice_new = 0, img.shape[0]-1
     if low_consecutive:
-        low_slice = low_slices.max()
+        low_slice_new = low_slices.max()
     if high_consecutive:
-        high_slice = high_slices.min()
+        high_slice_new = high_slices.min()
 
     if low_slice >= high_slice:
-        low_slice, high_slice = 0, img.shape[0]-1
+        low_slice_new, high_slice_new = 0, img.shape[0]-1
+        return low_slice_new, high_slice_new, img.copy()
+    
+    if high_slice_new - low_slice_new == 2: # Too much trimming, almost consecutive extreme fragments
         return low_slice, high_slice, img.copy()
+    
+    low_slice = max([low_slice, low_slice_new])
+    high_slice = min([high_slice, high_slice_new])
     
     # Provide corrected image 
     out_img[low_slice : high_slice] = img[low_slice : high_slice] 
@@ -482,6 +527,31 @@ def separate_arterial_venous(tta_img : np.ndarray, cfg : dict, image, out : os.P
     sitk.WriteImage(vein_segm_image, vein_file)
 
 
+def obtain_extreme_slices(array : np.ndarray, bgd_val : float = 0.0) -> Union[int,int]:
+    """
+    Obtain extreme slices for array of interest
+
+    Params
+    ------
+    array : image array
+    bgd_val : background value
+
+    Returns
+    -------
+    low_slice : inferior slice
+    high_slice : superior slice
+
+    """
+    assert len(array.shape) == 3, f"Input image array is not 3D ({len(array.shape)})"
+    # Get mean value of all axial slices 
+    mean_val = np.mean(array, axis=(1,2))
+    # Obtain slices with information
+    info_slices = np.where(mean_val > bgd_val)[0]
+    # Obtain extreme slice coordinates 
+    low_slice = info_slices.min()
+    high_slice = info_slices.max()
+    return low_slice, high_slice 
+
 def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder : os.PathLike, cta_folder : os.PathLike, out : os.PathLike, out_cta : os.PathLike, cid : str, cfg : dict):
     """
     Analyze preprocessed CTP data for case ID of interest
@@ -509,7 +579,7 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     # Extract corresponding time information
     logger.info("Loading corresponding time information...")
     time_array = load_time(time_folder=time_folder, cid=cid) 
-    assert time_array.shape[0] == ctp_array.shape[0], f"The time information length ({time_array.shape[0]}) does not coincide with the length of the CTP information ({ctp_array.shape[0]})"  
+    assert time_array.shape[1] == ctp_array.shape[0], f"The time information length ({time_array.shape[1]}) does not coincide with the length of the CTP information ({ctp_array.shape[0]})"  
 
     # Extract average CTP frame  
     # avg_frame, avg_frame_image = extract_avg_frame(ctp=ctp_array, image=image, time=time_array)
@@ -521,8 +591,7 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     # Obtain variation image with approximate vessel information 
     # (zones with high time variability in the CTP scan)
     logger.info("Obtain variation image from preprocessed CTP scan...")
-    variation_img = get_variation_image(array = ctp_array)
-    # variation_img = compute_temporal_gradient(volume=ctp_array)
+    variation_img = get_variation_image(array = ctp_array, image=cta_image)
 
     assert "segment_skull_brain" in list(cfg.keys()), "Key 'segment_skull_brain' not in configuration keys"
     do_segm_skull_brain = cfg["segment_skull_brain"]
@@ -557,6 +626,17 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
         variation_img *= variation_mask
 
     # Detect slices with registration errors
+        
+    logger.info("Removing any slices with artifacts in the variation image...")
+    low_slice, high_slice, variation_img = detect_slices_artifacts(img = variation_img, 
+                                                                    low_slice = low_slice, 
+                                                                    high_slice = high_slice)
+    
+    # Median filter variation image, 
+    # to avoid granular noise in the final variation image 
+    size = cfg["median_filter_size"]
+    assert isinstance(size, int) and size > 0, f"Median filter size '{size}' is not integer or negative" 
+    variation_img = median_filter(variation_img, size=size)
     
 
     # file = "/scratch/amartinezmora/code/test_cv_image.nii.gz"
@@ -564,12 +644,6 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     # cv_image.CopyInformation(cta_image)
     # sitk.WriteImage(cv_image, file)
     # sys.exit()
-        
-    logger.info("Removing any slices with artifacts in the variation image...")
-    low_slice_artifact, high_slice_artifact, variation_img = detect_slices_artifacts(img = variation_img)
-    # Readjust extreme slices 
-    low_slice = max([low_slice, low_slice_artifact])
-    high_slice = min([high_slice, high_slice_artifact])
 
     print(low_slice, high_slice)
 
@@ -623,13 +697,12 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     do_cta_mask = cfg["cta_mask"]
     if do_cta_mask == 1: 
         logger.info("Masking CTA slices that are not present in TTA image...")
-        cta_masking(cta_array=cta_array, low_slice=low_slice, high_slice=high_slice, 
+        # Determine extreme slices where to trim CTA scan
+        low_tta, high_tta = obtain_extreme_slices(array = variation_img, 
+                                                  bgd_val=0) 
+        print(low_tta, high_tta)
+        cta_masking(cta_array=cta_array, low_slice=low_tta, high_slice=high_tta, 
                     image=cta_image, out_cta_folder=out_cta, cid=cid) 
-      
-
-def compute_temporal_gradient(volume):
-    grad = np.abs(np.gradient(volume, axis=0)).max(axis=0)  # Temporal derivative
-    return grad
 
 
 def main(args):
