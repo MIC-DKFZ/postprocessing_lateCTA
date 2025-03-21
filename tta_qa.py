@@ -7,30 +7,7 @@ import numpy as np
 from typing import Union
 import pandas as pd
 
-def obtain_extreme_slices(array : np.ndarray, bgd_val : float = 0.0) -> Union[int,int]:
-    """
-    Obtain extreme slices for array of interest
-
-    Params
-    ------
-    array : image array
-    bgd_val : background value
-
-    Returns
-    -------
-    low_slice : inferior slice
-    high_slice : superior slice
-
-    """
-    assert len(array.shape) == 3, f"Input image array is not 3D ({len(array.shape)})"
-    # Get mean value of all axial slices 
-    mean_val = np.mean(array, axis=(1,2))
-    # Obtain slices with information
-    info_slices = np.where(mean_val > bgd_val)[0]
-    # Obtain extreme slice coordinates 
-    low_slice = info_slices.min()
-    high_slice = info_slices.max()
-    return low_slice, high_slice 
+from extract_tta import obtain_extreme_slices
 
 
 def main(args):
@@ -54,15 +31,16 @@ def main(args):
     stats_file = os.path.join(out_folder, "stats_cta_tta.csv")
 
     for cta_file in cta_files:
-        if ".nii.gz" in cta_file:
+        cid = cta_file.replace(".nii.gz", "")
+        tta_file = os.path.join(tta_folder, f"{cid}.nii.gz")
+        if ".nii.gz" in cta_file and os.path.exists(tta_file):
             # Load CTA and TTA images
-            cid = cta_file.replace(".nii.gz", "")
             print(cid)
             out_dict["cid"].append(cid) 
             full_file = os.path.join(cta_folder, cta_file) 
             cta_image = sitk.ReadImage(full_file)
             cta = sitk.GetArrayFromImage(cta_image)
-            tta_file = os.path.join(tta_folder, f"{cid}.nii.gz")
+            
             tta_image = sitk.ReadImage(tta_file)
             tta = sitk.GetArrayFromImage(tta_image)
 
