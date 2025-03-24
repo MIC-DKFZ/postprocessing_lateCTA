@@ -287,6 +287,9 @@ def trim_ctp(ctp_array : np.ndarray, cfg : dict) -> Union[np.ndarray, int, int]:
         return ctp_array, 0, ctp_array.shape[1]-1 
 
     # Further trim the CTP data if there are more outlier slices 
+    if high_slice - low_slice == 2:
+        return ctp_array, low_slice, high_slice
+     
     ctp_array_out[:,low_slice:high_slice] = ctp_array[:,low_slice:high_slice]
 
     print(low_slice, high_slice)
@@ -324,7 +327,14 @@ def segment_brain_components(cta_folder : os.PathLike, segm_folder : os.PathLike
     if not(os.path.exists(skull_file)) or not(os.path.exists(brain_file)) or not(os.path.exists(cca_file)) or not(os.path.exists(ica_file)):
         # Derive skull segmentation from CTA image
         cta_file = os.path.join(cta_folder, f"{cid}.nii.gz")
-        cta_image = nib.load(cta_file)
+        try:
+            cta_image = nib.load(cta_file)
+        except:
+            # Save image with SimpleITK if nibabel does not manage to load it 
+            cta_image_sitk = sitk.ReadImage(cta_file)
+            cta_image_sitk.CopyInformation(image)
+            sitk.WriteImage(cta_image_sitk, cta_file)
+            cta_image = nib.load(cta_file)
         brain_segm, skull_segm, cca_segm = segment_brain(img = cta_image) 
         ica_segm = segment_ica(img = cta_image)
         skull_segm_image = sitk.GetImageFromArray(skull_segm)
@@ -445,8 +455,11 @@ def detect_slices_artifacts(img : np.ndarray, low_slice : int, high_slice : int)
         low_slice_new, high_slice_new = 0, img.shape[0]-1
         return low_slice_new, high_slice_new, img.copy()
     
-    if high_slice_new - low_slice_new == 2: # Too much trimming, almost consecutive extreme fragments
+    if (high_slice_new - low_slice_new == 2): # Too much trimming, almost consecutive extreme fragments
         return low_slice, high_slice, img.copy()
+    
+    if (high_slice - low_slice == 2):
+        return 0, img.shape[0]-1, img.copy() 
     
     low_slice = max([low_slice, low_slice_new])
     high_slice = min([high_slice, high_slice_new])
@@ -575,6 +588,7 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     # Trim CTP and identify low and high slices in the axial direction
     logger.info("Trimming CTP scan...")
     ctp_array, low_slice, high_slice = trim_ctp(ctp_array=ctp_array, cfg=cfg)  
+    print(low_slice, high_slice)
 
     # Extract corresponding time information
     logger.info("Loading corresponding time information...")
@@ -609,7 +623,7 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     # Ignore the first and last slices of the variation image
     assert "trim" in list(cfg.keys()), "Key 'trim' not present in configuration"
     trim = cfg["trim"]
-    if trim > 0:
+    if trim > 0 and (high_slice - low_slice > 2):
         logger.info("Trimming variation image...")
         variation_img[:trim] = 0 # Top trimming 
         variation_img[(-trim):] = 0 # Bottom trimming  
@@ -637,15 +651,12 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     size = cfg["median_filter_size"]
     assert isinstance(size, int) and size > 0, f"Median filter size '{size}' is not integer or negative" 
     variation_img = median_filter(variation_img, size=size)
-    
 
     # file = "/scratch/amartinezmora/code/test_cv_image.nii.gz"
     # cv_image = sitk.GetImageFromArray(variation_img)
     # cv_image.CopyInformation(cta_image)
     # sitk.WriteImage(cv_image, file)
     # sys.exit()
-
-    print(low_slice, high_slice)
 
     # Isolate zones with high variation in the variation image 
     # (pseudo-vessel segmentation image)
