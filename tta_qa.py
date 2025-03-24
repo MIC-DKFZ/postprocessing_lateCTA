@@ -103,6 +103,12 @@ def main(args):
 
 
     df = pd.DataFrame(out_dict)
+    if os.path.exists(stats_file):
+        # Concatenate information if there are previously processed cases 
+        print("Concatenating with existing QA information...")
+        old_df = pd.read_csv(stats_file)
+        df = pd.concat([old_df, df], ignore_index=True)
+    
     df.to_csv(stats_file)
 
 
