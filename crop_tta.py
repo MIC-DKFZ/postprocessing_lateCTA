@@ -46,37 +46,40 @@ def crop_case(cid : str, cta_folder : os.PathLike, tta_folder : os.PathLike, out
 
         out_file = os.path.join(out, os.path.basename(file))
 
-        # Read image 
-        image = sitk.ReadImage(file)
-        img = sitk.GetArrayFromImage(image)
-        
-        # Assertions
-        if low_lim != -1:
-            assert low_lim < img.shape[0], "Low cropping limit exceeding image dimensions" 
+        if not(os.path.exists(out_file)):
 
-        if high_lim != -1:
-            assert high_lim < img.shape[0], "High cropping limit exceeding image dimensions" 
+            # Read image 
+            image = sitk.ReadImage(file)
+            img = sitk.GetArrayFromImage(image)
+            
+            # Assertions
+            if low_lim != -1:
+                assert low_lim < img.shape[0], "Low cropping limit exceeding image dimensions" 
 
-        # Set up output image 
-        out_img = np.zeros(img.shape) + bgd
+            if high_lim != -1:
+                assert high_lim < img.shape[0]-1, "High cropping limit exceeding image dimensions" 
 
-        # Complete cropping 
-        
-        if low_lim == -1:
-            # Only superior cropping 
-            out_img[:high_lim] = img[:high_lim] 
+            # Set up output image 
+            out_img = np.zeros(img.shape) + bgd
 
-        if high_lim == -1:
-            # Only inferior cropping 
-            out_img[low_lim:] = img[low_lim:]
+            # Complete cropping 
+            
+            if low_lim == -1:
+                # Only superior cropping 
+                out_img[:high_lim] = img[:high_lim] 
 
-        if low_lim != -1 and high_lim != -1:
-            # Both inferior and superior cropping
-            out_img[low_lim:high_lim] = img[low_lim:high_lim]
+            if high_lim == -1:
+                # Only inferior cropping 
+                out_img[low_lim:] = img[low_lim:]
 
-        out_image = sitk.GetImageFromArray(out_img)
-        out_image.CopyInformation(image)
-        sitk.WriteImage(out_image, out_file)
+            if low_lim != -1 and high_lim != -1:
+                # Both inferior and superior cropping
+                out_img[low_lim:high_lim] = img[low_lim:high_lim]
+
+            print(cid, img.shape, out_img.shape, out_file, img.sum(), out_img.sum())
+            out_image = sitk.GetImageFromArray(out_img.astype(np.float32))
+            out_image.CopyInformation(image)
+            sitk.WriteImage(out_image, out_file)
 
 
 
