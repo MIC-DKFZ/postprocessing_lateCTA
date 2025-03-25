@@ -110,6 +110,8 @@ def binarize_variation_image(cv_img : np.ndarray, cfg : dict) -> np.ndarray:
 
     # Set as threshold the FWHM of the distances 
     thr_cv = centers[medium_ind]
+
+
     
 
     logger.info(f"Binarize variation image with threshold value: {thr_cv}")
@@ -602,6 +604,15 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     logger.info("Loading CTA scan...")
     cta_image, cta_array = extract_cta_array(cta_folder=cta_folder, cid=cid)
 
+    # Obtain time-to-arrival image 
+    logger.info("Deriving TTA image...")
+    tta_img = derive_tta(ctp_array=ctp_array, time_array=time_array) 
+
+    # file = "/scratch/amartinezmora/code/test_tta_image.nii.gz"
+    # cv_image = sitk.GetImageFromArray(tta_img.astype(np.float32))
+    # cv_image.CopyInformation(cta_image)
+    # sitk.WriteImage(cv_image, file)
+
     # Obtain variation image with approximate vessel information 
     # (zones with high time variability in the CTP scan)
     logger.info("Obtain variation image from preprocessed CTP scan...")
@@ -652,18 +663,18 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     assert isinstance(size, int) and size > 0, f"Median filter size '{size}' is not integer or negative" 
     variation_img = median_filter(variation_img, size=size)
 
-    # file = "/scratch/amartinezmora/code/test_cv_image.nii.gz"
-    # cv_image = sitk.GetImageFromArray(variation_img)
-    # cv_image.CopyInformation(cta_image)
-    # sitk.WriteImage(cv_image, file)
-    # sys.exit()
-
     # Isolate zones with high variation in the variation image 
     # (pseudo-vessel segmentation image)
     logger.info("Binarizing variation image...")
     bin_var_img = binarize_variation_image(cv_img = variation_img, cfg=cfg) 
-    
-    
+
+    # k_means_results = np.ones(variation_img.shape)
+    # k_means_results[variation_img >= 0.0679] = 2
+    # k_means_results[variation_img < 0.02036] = 0
+    # k_means_image = sitk.GetImageFromArray(k_means_results.astype(np.float32))
+    #  k_means_image.CopyInformation(cta_image)
+    # sitk.WriteImage(k_means_image, "/scratch/amartinezmora/kmeans.nii.gz")
+    #  sys.exit()
 
     # Store binary variation image
     bin_var_image = sitk.GetImageFromArray(bin_var_img.astype(np.float32))
@@ -671,9 +682,7 @@ def case_analysis(folder : os.PathLike, time_folder : os.PathLike, skull_folder 
     bin_file = os.path.join(out, f"{cid}_bin.nii.gz")
     sitk.WriteImage(bin_var_image, bin_file)
 
-    # Obtain time-to-arrival image 
-    logger.info("Deriving TTA image...")
-    tta_img = derive_tta(ctp_array=ctp_array, time_array=time_array) 
+
 
     # Restrict TTA image to zones of high variation only
     logger.info("Restricting TTA image to zones of high variation...")
