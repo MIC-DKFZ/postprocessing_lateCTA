@@ -289,3 +289,37 @@ def invert_transformation(image: sitk.Image, reference_image: sitk.Image,
     transformed_image = sitk.Resample(image, reference_image,
                                              transform, interpolator, default_value)
     return transformed_image
+
+
+def transform_point(transform_parameters, point : np.ndarray) -> np.ndarray:
+    """
+    Transform point with a parameter map
+
+    Params
+    ------
+    transform_parameters : transformation parameters computed from registration process
+    point : input point
+
+
+    Returns
+    -------
+    transformed_point : transformed point
+    
+    """
+    # Create a transformix object with the parameter map
+    transformix = sitk.TransformixImageFilter()
+    transformix.SetTransformParameterMap(transform_parameters)
+
+    # Create the SimpleITK transform object
+    sitk_transform = sitk.TransformixTransform(transform_parameters)
+
+    # Convert to tuple
+    point_sitk = tuple(point.tolist())
+
+    # Apply the transformation
+    transformed_point_sitk = sitk_transform.TransformPoint(point_sitk)
+
+    # Convert back to NumPy if needed
+    transformed_point = np.array(transformed_point_sitk)
+
+    return transformed_point

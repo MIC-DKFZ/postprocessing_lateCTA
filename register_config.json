@@ -2,4 +2,5 @@
  "default_val":-1024,
  "metric":"AdvancedNormalizedCorrelation",
  "method":"euler",
- "threads":6}
+ "threads":6,
+ "mask_size":15}
