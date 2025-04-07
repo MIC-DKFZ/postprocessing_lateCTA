@@ -3,10 +3,13 @@ import SimpleITK as sitk
 import numpy as np
 import argparse
 from typing import Union
+import time
+import matplotlib.pyplot as plt
 
-from utils.load_save import load_data
+from utils.load_save import load_data, write_data
 from registration.setParameters import set_parameters
-from registration.registration_utils import get_transformation_matrix,transform_point
+from registration.registration_utils import get_transformation_matrix,transform_point, apply_transformation
+from registration.qa_register import compare_files
 
 
 def obtain_cids(folder : os.PathLike) -> list:
@@ -145,9 +148,107 @@ def create_mask_point(cta_img : np.ndarray, low_lim : int, high_lim : int, point
     # Remove parts of the mask outside of CTA limits
     trim_mask = np.zeros(mask.shape)
     trim_mask[low_lim:high_lim+1] = 1
-    mask *= trim_mask
+    mask = mask.astype(np.float32)
+    mask *= trim_mask.astype(np.float32)
 
     return mask 
+
+
+def create_instance(mask : np.ndarray) -> dict:
+    """
+    Provide instance information from input thrombus mask
+
+    Params
+    ------
+    mask : thrombus mask information
+
+    Returns
+    -------
+    info : instance information
+    
+    """
+    info = {} 
+    if mask.sum() > 0:
+        info = {"1":0} 
+    return info
+
+
+def setup_qa(fixed_img : np.ndarray, reg_img : np.ndarray, mask_img : np.ndarray, point : np.ndarray, low_lim : int, high_lim : int, outfile : os.PathLike, outfile_qa : os.PathLike):
+    """
+    Store plots of fixed and registered CTA images and
+    compute correlation coefficient between images
+
+    Params
+    ------
+    fixed_img : fixed image
+    reg_img : registered image
+    mask_img : mask image
+    point : registered point data
+    low_lim : low limit in axial direction of fixed image
+    high_lim : up limit in axial direction of fixed image
+    outfile : output file
+    outfile_qa : output file with correlation results
+
+    Returns
+    -------
+    Plots comparing images during registration process
+    
+    """
+    # Plot registered image only in the limits of the original image 
+    reg_copy = np.zeros(reg_img.shape)-1024
+    reg_copy[low_lim:(high_lim + 1)] = reg_img[low_lim:(high_lim + 1)]  
+
+    point = point.flatten()# Just in case, flatten dimensions of point of interest 
+
+    plt.figure()
+    plt.subplot(331)
+    plt.imshow(fixed_img[fixed_img.shape[0]//2], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(332)
+    plt.imshow(fixed_img[:,fixed_img.shape[1]//2], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(333)
+    plt.imshow(fixed_img[:,:,fixed_img.shape[2]//2], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(334)
+    plt.imshow(reg_copy[reg_copy.shape[0]//2], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.subplot(335)
+    plt.imshow(reg_copy[:,reg_copy.shape[1]//2], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(336)
+    plt.imshow(reg_copy[:,:,reg_copy.shape[2]//2], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.subplot(337)
+    plt.imshow(mask_img[mask_img.shape[0]//2], cmap="gray")
+    plt.title(point[0])
+    plt.subplot(338)
+    plt.imshow(mask_img[:,mask_img.shape[1]//2], cmap="gray")
+    plt.title(point[1])
+    plt.colorbar()
+    plt.subplot(339)
+    plt.imshow(mask_img[:,:,mask_img.shape[2]//2], cmap="gray")
+    plt.title(point[2])
+    plt.colorbar()
+    plt.tight_layout()
+    plt.savefig(outfile)
+
+    # Compute correlation coefficient
+    r = compare_files(fixed_img, reg_copy)
+    cid = os.path.basename(outfile).replace(".png", "")
+    with open(outfile_qa, "a") as f:
+        f.write(f"{cid},{r}\n")
+        f.close()
 
 
 def main(args):
@@ -160,7 +261,7 @@ def main(args):
     assert os.path.exists(os.path.dirname(out_folder)), f"Parent folder of output folder '{os.path.dirname(out_folder)}' does not exist"
 
     # Load registration configuration
-    config_file = "register_config.json"
+    config_file = "register_thrombus_config.json"
     assert os.path.exists(config_file), f"Configuration file for registration '{config_file}' does not exist"
     cfg = load_data(filename=config_file)
     cfg_keys = list(cfg.keys())
@@ -183,20 +284,25 @@ def main(args):
     cids = obtain_cids(folder=cta_folder) 
 
     # Derive moving CTA file and thrombus file
+    outfile_qa = os.path.join(out_folder, "qa.txt")
     for cid in cids:
         # Set up moving file and thrombus file
         moving_file, thrombus_file = derive_thrombus_files(in_folder = in_folder, cid = cid)
         # Set up output file
         outfile = os.path.join(out_folder, f"{cid}.nii.gz")  # Skip registration and thrombus mask creation, if it has already been processed
         if os.path.exists(moving_file) and os.path.exists(thrombus_file) and not(os.path.exists(outfile)):
+            print(cid)
+            init = time.time()
             # Load fixed file
             fixed_file = os.path.join(cta_folder, f"{cid}.nii.gz")
             fixed_image = sitk.ReadImage(fixed_file) 
             fixed_img = sitk.GetArrayFromImage(fixed_image)
             # Derive extremes of CTA images
             low_lim, up_lim = obtain_extremes_cta(cta=fixed_img)
+            print(low_lim, up_lim)
             # Load moving file and thrombus file
             moving_image = sitk.ReadImage(moving_file) 
+            moving_img = sitk.GetArrayFromImage(moving_image)
             thrombus = load_thrombus_point(file = thrombus_file)
             print(thrombus, moving_image.GetSize())
             
@@ -205,9 +311,41 @@ def main(args):
                                                     moving=moving_image, 
                                                     clipvalue=[None, None], 
                                                     parameters=p)
-            # Obtain transformed points
-            thrombus_transformed = transform_point(transform_parameters=transform_matrix,
-                                                   point=thrombus)
+            # thrombus_transformed = transform_point(transform_parameters=transform_matrix,
+            #                                     fixed=fixed_image,
+            #                                     moving=moving_image,
+            #                                     point=thrombus)
+            # Obtain transformed points 
+            """
+            mask_point_orig = create_mask_point(cta_img = moving_img, 
+                                           low_lim=low_lim, 
+                                           high_lim=up_lim, 
+                                           point=thrombus,
+                                           radius = cfg["mask_size"])
+            print(mask_point_orig.sum())
+            mask_point_orig_image = sitk.GetImageFromArray(mask_point_orig)
+            mask_point_orig_image.CopyInformation(moving_image)
+            new_mask = apply_transformation(transform_parameters=transform_matrix,
+                                            moving=mask_point_orig_image,
+                                            segmentation=True,
+                                            default_pixel=0)
+            new_mask.CopyInformation(fixed_image)
+            new_mask_img = sitk.GetArrayFromImage(new_mask)
+            sitk.WriteImage(new_mask, os.path.join(os.getcwd(), "new_mask_image.nii.gz"))
+            print(new_mask_img.sum())
+            """
+            
+            # Apply transformation to image also
+            new_cta = apply_transformation(transform_matrix, 
+                                             moving=moving_image, 
+                                             segmentation=False, 
+                                             default_pixel=cfg["default_val"]) 
+            # Save information on registered image and save matplotlib plot
+            new_cta_img = sitk.GetArrayFromImage(new_cta)
+            new_cta.CopyInformation(fixed_image)
+            outfile_reg = outfile.replace(".nii.gz", "_reg.nii.gz")
+            sitk.WriteImage(new_cta, outfile_reg)
+            sys.exit()
             print(thrombus_transformed)
 
             # Obtain mask around transformed thrombus points
@@ -221,6 +359,20 @@ def main(args):
             mask_image = sitk.GetImageFromArray(mask_point.astype(np.float32))
             mask_image.CopyInformation(fixed_image)
             sitk.WriteImage(mask_image, outfile) 
+            # Obtain also instance information in json file and save it also
+            instance_info = create_instance(mask = mask_point)
+            instance_file = outfile.replace(".nii.gz", ".json") 
+            write_data(data = instance_info, filename=instance_file)
+
+            
+
+            # QA
+            setup_qa(fixed_img=fixed_img, reg_img = new_cta_img, mask_img=mask_point, 
+                     point=thrombus_transformed, low_lim=low_lim, high_lim = up_lim,
+                     outfile=outfile.replace(".nii.gz", ".png"),
+                     outfile_qa=outfile_qa)
+
+            print(f"Ellapsed time: {time.time()-init}sec")
     
 
 def get_args():
@@ -234,4 +386,6 @@ def get_args():
 
 
 if __name__ == "__main__":
+    t1 = time.time()
     main(get_args())
+    print(time.time()-t1)

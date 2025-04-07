@@ -1,6 +1,9 @@
 import SimpleITK as sitk
 import numpy as np
 from scipy.ndimage import binary_fill_holes, binary_erosion
+import os
+import tempfile
+
 def Clipper(scan, minimum=-1024, maximum=1900):
     """
     Clip values of input with numpy.clip, with minimum and maximum as min/max.
@@ -290,14 +293,47 @@ def invert_transformation(image: sitk.Image, reference_image: sitk.Image,
                                              transform, interpolator, default_value)
     return transformed_image
 
+def inject_fixed_image_metadata(param_map, fixed_image):
+    """
+    Inject fixed image metadata on registration parameter map,
+    to inform point registration process
 
-def transform_point(transform_parameters, point : np.ndarray) -> np.ndarray:
+    Params
+    ------
+    param_map : transformation parameter map
+    fixed_image : fixed image
+
+    Returns
+    -------
+    Updated parameter map
+    
+    """
+    # Get image metadata
+    spacing = fixed_image.GetSpacing()
+    origin = fixed_image.GetOrigin()
+    direction = fixed_image.GetDirection()
+
+    # Format direction matrix as flat list
+    direction_flat = [str(v) for v in direction]
+    spacing_str = [str(s) for s in spacing]
+    origin_str = [str(o) for o in origin]
+
+    # Inject metadata into the parameter map
+    param_map[0]['Spacing'] = spacing_str
+    param_map[0]['Origin'] = origin_str
+    param_map[0]['Direction'] = direction_flat
+
+    return param_map
+
+def transform_point(transform_parameters, fixed, moving, point : np.ndarray) -> np.ndarray:
     """
     Transform point with a parameter map
 
     Params
     ------
     transform_parameters : transformation parameters computed from registration process
+    fixed : fixed image used in the registration process
+    moving : moving image used in the registration process
     point : input point
 
 
@@ -306,20 +342,139 @@ def transform_point(transform_parameters, point : np.ndarray) -> np.ndarray:
     transformed_point : transformed point
     
     """
-    # Create a transformix object with the parameter map
+    # Set up physical point 
+    physical_point = moving.TransformIndexToPhysicalPoint(tuple(point.tolist()))
+
+    # Create a Transformix object to transform the point
     transformix = sitk.TransformixImageFilter()
     transformix.SetTransformParameterMap(transform_parameters)
+    transformix.SetMovingImage(moving)
+    transformix.LogToConsoleOff()
+    transformix.Execute()
 
-    # Create the SimpleITK transform object
-    sitk_transform = sitk.TransformixTransform(transform_parameters)
+    transform_obj = sitk.Transformix().ReadTransformParameterMap(transform_parameters)
 
-    # Convert to tuple
-    point_sitk = tuple(point.tolist())
+    # Transform a single point (landmark) from fixed to moving space
+    transformed_physical = transform_obj.TransformPoint(physical_point)
 
-    # Apply the transformation
-    transformed_point_sitk = sitk_transform.TransformPoint(point_sitk)
+    transformed_index = fixed.TransformPhysicalPointToIndex(transformed_physical)
 
-    # Convert back to NumPy if needed
-    transformed_point = np.array(transformed_point_sitk)
+    print(transformed_physical, transformed_index)
 
-    return transformed_point
+    return transformed_index
+
+
+def euler_transform_matrix(rx, ry, rz, tx, ty, tz):
+    rx, ry, rz = float(rx), float(ry), float(rz)
+    tx, ty, tz = float(tx), float(ty), float(tz)
+    Rx = np.array([
+        [1, 0, 0],
+        [0, np.cos(rx), -np.sin(rx)],
+        [0, np.sin(rx),  np.cos(rx)]
+    ])
+    Ry = np.array([
+        [ np.cos(ry), 0, np.sin(ry)],
+        [ 0,         1, 0],
+        [-np.sin(ry), 0, np.cos(ry)]
+    ])
+    Rz = np.array([
+        [np.cos(rz), -np.sin(rz), 0],
+        [np.sin(rz),  np.cos(rz), 0],
+        [0, 0, 1]
+    ])
+    R = Rz @ Ry @ Rx
+    M = np.eye(4)
+    M[:3, :3] = R
+    M[:3, 3] = [tx, ty, tz]
+    return M
+
+
+def transform_point_euler(param_map, fixed, moving, point : np.ndarray) -> np.ndarray:
+    """
+    Transform point given a parameter map from a registration procedure,
+    assuming an Euler method (rotation + translation)
+
+    Params
+    ------
+    param_map : parameter map from previous registration process
+    fixed : fixed image
+    moving : moving image
+    point : point to register
+
+
+    Returns
+    -------
+    transformed_point : transformed point
+    
+    """
+    point = tuple(point.tolist()) # Transform point into tuple 
+    rx, ry, rz, tx, ty, tz = param_map[0]['TransformParameters']  
+
+    # 1. Convert voxel index to physical point (in moving space)
+    physical_moving = moving.TransformIndexToPhysicalPoint(point)
+    print(physical_moving)
+
+    # 2. Apply Euler transform in physical space
+    M = euler_transform_matrix(rx, ry, rz, tx, ty, tz)
+    moving_physical_hom = np.array([*physical_moving, 1.0])
+    print(moving_physical_hom)
+    fixed_physical = M @ moving_physical_hom
+    print(fixed_physical)
+
+    # 3. Convert to voxel index in fixed image
+    fixed_voxel_index = fixed.TransformPhysicalPointToIndex(fixed_physical[:3])
+
+    return np.array(fixed_voxel_index)
+
+
+def transform_voxel_coordinate(transform_parameters, moving_image, fixed_image, index_coord):
+    """
+    Transforms a voxel index coordinate using the provided transformation parameters.
+
+    Args:
+        transform_parameters: elastix transform parameter map
+        moving_image: SimpleITK image (used to convert index -> physical)
+        fixed_image : fixed image
+        index_coord: list or tuple of 3 integers (i, j, k) in voxel/index space
+
+    Returns:
+        transformed_point_phys: list of 3 floats (physical coordinates after transform)
+    """
+    # Convert index (voxel) to physical coordinate
+    point_phys = moving_image.TransformIndexToPhysicalPoint(tuple(index_coord.tolist()))
+
+    # Write the point in required format
+    # with tempfile.TemporaryDirectory() as tmpdir:
+    input_file = os.path.join(os.getcwd(), "inputpoint.txt")
+    output_file = os.path.join(os.getcwd(), "outputpoints.txt")
+
+    with open(input_file, "w") as f:
+        f.write("point\n1\n")
+        f.write(f"{point_phys[0]} {point_phys[1]} {point_phys[2]}\n")
+        f.close()
+
+    # Set up Transformix
+    transformix = sitk.TransformixImageFilter()
+    transformix.LogToConsoleOff()
+    transformix.LogToFileOff()
+    transformix.SetTransformParameterMap(transform_parameters)
+    transformix.SetFixedPointSetFileName(input_file)
+    transformix.SetTransformParameter('WriteResultPointFile', 'true')  # ✅ Required!
+    transformix.SetMovingImage(moving_image)  # ✅ Prevents direction error
+    transformix.Execute()
+
+    # Read transformed point
+    with open(output_file, "r") as f:
+        for line in f:
+            print(line)
+            if line.startswith("Point"):
+                for part in line.split(";"):
+                    if "OutputPoint" in part:
+                        coords = part.split("[")[1].split("]")[0].split()
+                        transformed_point_phys = [float(c) for c in coords]
+                        transformed_point = fixed_image.TransformPhysicalPointToIndex(transformed_point_phys)
+                        print(transformed_point)
+                        sys.exit()
+                        return np.array(transformed_point)  # This is still in physical space
+                    
+    return ValueError("Output point could not be read")
