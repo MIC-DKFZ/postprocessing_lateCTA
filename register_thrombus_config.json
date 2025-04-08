@@ -1,0 +1,6 @@
+{"overwrite":"n",
+ "default_val":-1024,
+ "metric":"AdvancedNormalizedCorrelation",
+ "method":"affine",
+ "threads":6,
+ "mask_size":15}

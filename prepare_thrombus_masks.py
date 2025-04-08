@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 from utils.load_save import load_data, write_data
 from registration.setParameters import set_parameters
-from registration.registration_utils import get_transformation_matrix,transform_point, apply_transformation
+from registration.registration_utils import get_transformation_matrix, apply_transformation
 from registration.qa_register import compare_files
 
 
@@ -251,6 +251,26 @@ def setup_qa(fixed_img : np.ndarray, reg_img : np.ndarray, mask_img : np.ndarray
         f.close()
 
 
+def derive_centroid(mask : np.ndarray) -> np.ndarray:
+    """
+    Derive centroid from binary mask
+
+    Params
+    ------
+    mask : input mask
+
+    Returns
+    -------
+    centroid : output centroid
+
+    """
+    voxel_coords = np.argwhere(mask > 0)
+
+    # Compute the centroid as the mean of these coordinates
+    centroid = np.round(voxel_coords.mean(axis=0)).astype(int)
+    return centroid
+
+
 def main(args):
     in_folder = args.input
     cta_folder = args.cta
@@ -311,29 +331,26 @@ def main(args):
                                                     moving=moving_image, 
                                                     clipvalue=[None, None], 
                                                     parameters=p)
-            # thrombus_transformed = transform_point(transform_parameters=transform_matrix,
-            #                                     fixed=fixed_image,
-            #                                     moving=moving_image,
-            #                                     point=thrombus)
-            # Obtain transformed points 
-            """
+            
+            # Apply deformation field to a thrombus mask generated around point of interest 
             mask_point_orig = create_mask_point(cta_img = moving_img, 
                                            low_lim=low_lim, 
                                            high_lim=up_lim, 
                                            point=thrombus,
                                            radius = cfg["mask_size"])
-            print(mask_point_orig.sum())
+            
             mask_point_orig_image = sitk.GetImageFromArray(mask_point_orig)
             mask_point_orig_image.CopyInformation(moving_image)
-            new_mask = apply_transformation(transform_parameters=transform_matrix,
-                                            moving=mask_point_orig_image,
-                                            segmentation=True,
-                                            default_pixel=0)
-            new_mask.CopyInformation(fixed_image)
-            new_mask_img = sitk.GetArrayFromImage(new_mask)
-            sitk.WriteImage(new_mask, os.path.join(os.getcwd(), "new_mask_image.nii.gz"))
-            print(new_mask_img.sum())
-            """
+            registered_mask = apply_transformation(transform_parameters=transform_matrix,
+                                                moving=mask_point_orig_image,
+                                                segmentation=True,
+                                                default_pixel=0)
+            registered_mask.CopyInformation(fixed_image)
+            registered_mask_img = sitk.GetArrayFromImage(registered_mask)
+
+            # Get as thrombus transformed point the centroid of the registered mask 
+            thrombus_transformed = derive_centroid(mask=registered_mask_img)
+
             
             # Apply transformation to image also
             new_cta = apply_transformation(transform_matrix, 
@@ -345,8 +362,6 @@ def main(args):
             new_cta.CopyInformation(fixed_image)
             outfile_reg = outfile.replace(".nii.gz", "_reg.nii.gz")
             sitk.WriteImage(new_cta, outfile_reg)
-            sys.exit()
-            print(thrombus_transformed)
 
             # Obtain mask around transformed thrombus points
             mask_point = create_mask_point(cta_img = fixed_img, 
@@ -355,6 +370,7 @@ def main(args):
                                            point=thrombus_transformed,
                                            radius = cfg["mask_size"])
             print(mask_point.shape, mask_point.sum())
+
             # Save mask information on transformed thrombus point
             mask_image = sitk.GetImageFromArray(mask_point.astype(np.float32))
             mask_image.CopyInformation(fixed_image)
@@ -363,8 +379,6 @@ def main(args):
             instance_info = create_instance(mask = mask_point)
             instance_file = outfile.replace(".nii.gz", ".json") 
             write_data(data = instance_info, filename=instance_file)
-
-            
 
             # QA
             setup_qa(fixed_img=fixed_img, reg_img = new_cta_img, mask_img=mask_point, 
