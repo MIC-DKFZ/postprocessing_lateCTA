@@ -34,9 +34,10 @@ def obtain_cids(folder : os.PathLike) -> list:
     return cids
 
 
-def derive_thrombus_files(in_folder : os.PathLike, cid : str) -> Union[os.PathLike, os.PathLike]:
+def derive_thrombus_files(in_folder : os.PathLike, cid : str) -> Union[os.PathLike, os.PathLike, os.PathLike, str]:
     """
     Obtain thrmbus files for a specific case ID
+    and type of label read
 
     Params
     ------
@@ -46,28 +47,35 @@ def derive_thrombus_files(in_folder : os.PathLike, cid : str) -> Union[os.PathLi
     Returns
     -------
     moving_file : CTA information file
-    thrombus_file : thrombus file
+    thrombus_file : thrombus point file
+    thrombus_mask_file : thrombus mask file
+    label_type : either "automated" or "manual"
     
     """
-
+    label_type = "automated"
     if cid[0].lower() == "r": # Registry ID
         set_folder = os.path.join(in_folder, "registry_nicolab")
-        assert os.path.exists(set_folder), f"Set folder of thrombus data '{set_folder}' does not exist"
+        mask_folder = os.path.join(in_folder, "registry_nicolab_segms")
+        # assert os.path.exists(set_folder), f"Set folder of thrombus data '{set_folder}' does not exist"
         moving_file = os.path.join(set_folder, cid, "registered.nii.gz")
         thrombus_file = os.path.join(set_folder, cid, "thrombus_point.txt")
-    elif "mrclean_noiv" in cid: # NOIV ID, prioritze manual labels over Nicolab labels
+        thrombus_mask_file = os.path.join(mask_folder, cid, "thrombus_segmentation.nii.gz")
+    elif "mrclean_noiv" in cid: # NOIV ID, prioritize manual labels over Nicolab labels
         set_folder = os.path.join(in_folder, "noiv_manual")
-        assert os.path.exists(set_folder), f"Set folder of thrombus data '{set_folder}' does not exist"
-        moving_file = os.path.join(set_folder, cid.replace("mr_clean_noiv_", ""), "registered.nii.gz")
-        thrombus_file = os.path.join(set_folder, cid.replace("mr_clean_noiv_", ""), "manual_thrombus_point.txt")
+        #  assert os.path.exists(set_folder), f"Set folder of thrombus data '{set_folder}' does not exist"
+        moving_file = os.path.join(set_folder, cid.replace("mrclean_noiv_", ""), "registered.nii.gz")
+        thrombus_file = os.path.join(set_folder, cid.replace("mrclean_noiv_", ""), "manual_thrombus_point.txt")
+        thrombus_mask_file = os.path.join(set_folder, cid.replace("mrclean_noiv_", ""), "thrombus_mask.nii.gz")
+        label_type = "manual"
         if not(os.path.exists(moving_file)) or not(os.path.exists(thrombus_file)):
             # Try to check if there is a Nicolab label for the same ID
             set_folder = os.path.join(in_folder, "noiv_nicolab") 
             assert os.path.exists(set_folder), f"Set folder of thrombus data '{set_folder}' does not exist"
-            moving_file = os.path.join(set_folder, cid.replace("mr_clean_noiv_", ""), "results", "thrombus_result", "registered.nii.gz")
-            thrombus_file = os.path.join(set_folder, cid.replace("mr_clean_noiv_", ""), "results", "thrombus_result", "thrombus_point.txt")
-
-    return moving_file, thrombus_file
+            moving_file = os.path.join(set_folder, cid.replace("mrclean_noiv_", ""), "results", "thrombus_result", "registered.nii.gz")
+            thrombus_file = os.path.join(set_folder, cid.replace("mrclean_noiv_", ""), "results", "thrombus_result", "thrombus_point.txt")
+            thrombus_mask_file = os.path.join(set_folder, cid.replace("mrclean_noiv_", ""), "results", "thrombus_mask.nii.gz")
+            label_type = "automated"
+    return moving_file, thrombus_file, thrombus_mask_file, label_type
 
 
 def load_thrombus_point(file : os.PathLike) -> np.ndarray:
@@ -170,22 +178,47 @@ def create_instance(mask : np.ndarray) -> dict:
     info = {} 
     if mask.sum() > 0:
         info = {"1":0} 
-    return info
+    return {"instances" : info}
 
-
-def setup_qa(fixed_img : np.ndarray, reg_img : np.ndarray, mask_img : np.ndarray, point : np.ndarray, low_lim : int, high_lim : int, outfile : os.PathLike, outfile_qa : os.PathLike):
+def apply_window(image : np.ndarray, window_center : float, window_width : float):
     """
-    Store plots of fixed and registered CTA images and
+    Apply window to image
+
+    Params
+    ------
+    image : input image
+    window_center : window center
+    window_width : window width
+
+    Returns
+    -------
+    windowed : windowed image
+    
+    """
+    lower = window_center - window_width / 2
+    upper = window_center + window_width / 2
+    windowed = np.clip(image, lower, upper)
+    windowed = (windowed - lower) / window_width  # Normalize to [0, 1]
+    return windowed
+
+def setup_qa(fixed_img : np.ndarray, reg_img : np.ndarray, moving_img : np.ndarray, mask_img : np.ndarray, thrombus_mask : np.ndarray, point : np.ndarray, point_orig : np.ndarray, low_lim : int, high_lim : int, label : str, circle : bool, outfile : os.PathLike, outfile_qa : os.PathLike):
+    """
+    Store plots of fixed, moving and registered CTA images and
     compute correlation coefficient between images
 
     Params
     ------
     fixed_img : fixed image
     reg_img : registered image
+    moving_img : moving image
     mask_img : mask image
+    thrombus_mask : original mask with thrombus information
     point : registered point data
+    point_orig : original point data
     low_lim : low limit in axial direction of fixed image
     high_lim : up limit in axial direction of fixed image
+    label : type of label created ("automated" or "manual")
+    circle : whether registered mask is circular or not
     outfile : output file
     outfile_qa : output file with correlation results
 
@@ -200,54 +233,106 @@ def setup_qa(fixed_img : np.ndarray, reg_img : np.ndarray, mask_img : np.ndarray
 
     point = point.flatten()# Just in case, flatten dimensions of point of interest 
 
+    # Apply windowing 
+    fixed_img_w = apply_window(image = fixed_img,
+                               window_center=55,
+                               window_width=110)
+    reg_copy_w = apply_window(image = reg_copy,
+                               window_center=55,
+                               window_width=110)
+    moving_w = apply_window(image = moving_img,
+                            window_center=55,
+                            window_width=110)
+
     plt.figure()
-    plt.subplot(331)
-    plt.imshow(fixed_img[fixed_img.shape[0]//2], cmap="gray")
+    plt.subplot(5,3,1)
+    plt.imshow(fixed_img_w[point[0]], cmap="gray")
     plt.xticks([])
     plt.yticks([])
     plt.colorbar()
-    plt.subplot(332)
-    plt.imshow(fixed_img[:,fixed_img.shape[1]//2], cmap="gray")
+    plt.subplot(5,3,2)
+    plt.imshow(fixed_img_w[:,point[1]], cmap="gray")
     plt.xticks([])
     plt.yticks([])
     plt.colorbar()
-    plt.subplot(333)
-    plt.imshow(fixed_img[:,:,fixed_img.shape[2]//2], cmap="gray")
+    plt.subplot(5,3,3)
+    plt.imshow(fixed_img_w[:,:,point[2]], cmap="gray")
     plt.xticks([])
     plt.yticks([])
     plt.colorbar()
-    plt.subplot(334)
-    plt.imshow(reg_copy[reg_copy.shape[0]//2], cmap="gray")
-    plt.xticks([])
-    plt.yticks([])
-    plt.subplot(335)
-    plt.imshow(reg_copy[:,reg_copy.shape[1]//2], cmap="gray")
+    plt.subplot(5,3,4)
+    plt.imshow(reg_copy_w[point[0]], cmap="gray")
     plt.xticks([])
     plt.yticks([])
     plt.colorbar()
-    plt.subplot(336)
-    plt.imshow(reg_copy[:,:,reg_copy.shape[2]//2], cmap="gray")
+    plt.subplot(5,3,5)
+    plt.imshow(reg_copy_w[:,point[1]], cmap="gray")
     plt.xticks([])
     plt.yticks([])
-    plt.subplot(337)
-    plt.imshow(mask_img[mask_img.shape[0]//2], cmap="gray")
-    plt.title(point[0])
-    plt.subplot(338)
-    plt.imshow(mask_img[:,mask_img.shape[1]//2], cmap="gray")
-    plt.title(point[1])
     plt.colorbar()
-    plt.subplot(339)
-    plt.imshow(mask_img[:,:,mask_img.shape[2]//2], cmap="gray")
-    plt.title(point[2])
+    plt.subplot(5,3,6)
+    plt.imshow(reg_copy_w[:,:,point[2]], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(5,3,7)
+    plt.imshow(mask_img[point[0]], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(5,3,8)
+    plt.imshow(mask_img[:,point[1]], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(5,3,9)
+    plt.imshow(mask_img[:,:,point[2]], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(5,3,10)
+    plt.imshow(moving_w[point_orig[0]], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(5,3,11)
+    plt.imshow(moving_w[:,point_orig[1]], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(5,3,12)
+    plt.imshow(moving_w[:,:,point_orig[2]], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(5,3,13)
+    plt.imshow(thrombus_mask[point_orig[0]], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(5,3,14)
+    plt.imshow(thrombus_mask[:,point_orig[1]], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
+    plt.colorbar()
+    plt.subplot(5,3,15)
+    plt.imshow(thrombus_mask[:,:,point_orig[2]], cmap="gray")
+    plt.xticks([])
+    plt.yticks([])
     plt.colorbar()
     plt.tight_layout()
     plt.savefig(outfile)
 
     # Compute correlation coefficient
     r = compare_files(fixed_img, reg_copy)
+    print(r, label)
     cid = os.path.basename(outfile).replace(".png", "")
+    circle_info = "thrombus"
+    if circle:
+        circle_info = "circle"
+
     with open(outfile_qa, "a") as f:
-        f.write(f"{cid},{r}\n")
+        f.write(f"{cid},{r},{point[0]},{point[1]},{point[2]},{label},{circle_info}\n")
         f.close()
 
 
@@ -268,6 +353,7 @@ def derive_centroid(mask : np.ndarray) -> np.ndarray:
 
     # Compute the centroid as the mean of these coordinates
     centroid = np.round(voxel_coords.mean(axis=0)).astype(int)
+    print(centroid)
     return centroid
 
 
@@ -307,10 +393,10 @@ def main(args):
     outfile_qa = os.path.join(out_folder, "qa.txt")
     for cid in cids:
         # Set up moving file and thrombus file
-        moving_file, thrombus_file = derive_thrombus_files(in_folder = in_folder, cid = cid)
+        moving_file, thrombus_file, thrombus_mask_file, label_type = derive_thrombus_files(in_folder = in_folder, cid = cid)
         # Set up output file
         outfile = os.path.join(out_folder, f"{cid}.nii.gz")  # Skip registration and thrombus mask creation, if it has already been processed
-        if os.path.exists(moving_file) and os.path.exists(thrombus_file) and not(os.path.exists(outfile)):
+        if os.path.exists(moving_file) and os.path.exists(thrombus_file) and os.path.exists(thrombus_mask_file) and not(os.path.exists(outfile)):
             print(cid)
             init = time.time()
             # Load fixed file
@@ -331,26 +417,39 @@ def main(args):
                                                     moving=moving_image, 
                                                     clipvalue=[None, None], 
                                                     parameters=p)
-            
-            # Apply deformation field to a thrombus mask generated around point of interest 
-            mask_point_orig = create_mask_point(cta_img = moving_img, 
-                                           low_lim=low_lim, 
-                                           high_lim=up_lim, 
-                                           point=thrombus,
-                                           radius = cfg["mask_size"])
-            
-            mask_point_orig_image = sitk.GetImageFromArray(mask_point_orig)
-            mask_point_orig_image.CopyInformation(moving_image)
+
+            # Load thrombus mask  
+            thrombus_mask_image = sitk.ReadImage(thrombus_mask_file)
+            thrombus_mask = sitk.GetArrayFromImage(thrombus_mask_image)
             registered_mask = apply_transformation(transform_parameters=transform_matrix,
-                                                moving=mask_point_orig_image,
-                                                segmentation=True,
-                                                default_pixel=0)
+                                                 moving=thrombus_mask_image,
+                                                 segmentation=True,
+                                                 default_pixel=0)
             registered_mask.CopyInformation(fixed_image)
             registered_mask_img = sitk.GetArrayFromImage(registered_mask)
 
-            # Get as thrombus transformed point the centroid of the registered mask 
-            thrombus_transformed = derive_centroid(mask=registered_mask_img)
+            circular_mask = False
+            if registered_mask_img.sum() == 0:
+                # Thrombus content erased during registration, rescuing it from point
+                # Instead create a circular mask based on the thrombus point
 
+                # Apply deformation field to a thrombus mask generated around point of interest 
+                mask_point_orig = create_mask_point(cta_img = moving_img, 
+                                                low_lim=low_lim, 
+                                                high_lim=up_lim, 
+                                                point=thrombus,
+                                                radius = cfg["mask_size"])
+                
+                mask_point_orig_image = sitk.GetImageFromArray(mask_point_orig)
+                mask_point_orig_image.CopyInformation(moving_image)
+                registered_mask = apply_transformation(transform_parameters=transform_matrix,
+                                                     moving=mask_point_orig_image,
+                                                     segmentation=True,
+                                                     default_pixel=0)
+                registered_mask.CopyInformation(fixed_image)
+                registered_mask_img = sitk.GetArrayFromImage(registered_mask)
+                circular_mask = True 
+            
             
             # Apply transformation to image also
             new_cta = apply_transformation(transform_matrix, 
@@ -363,28 +462,43 @@ def main(args):
             outfile_reg = outfile.replace(".nii.gz", "_reg.nii.gz")
             sitk.WriteImage(new_cta, outfile_reg)
 
-            # Obtain mask around transformed thrombus points
-            mask_point = create_mask_point(cta_img = fixed_img, 
-                                           low_lim=low_lim, 
-                                           high_lim=up_lim, 
-                                           point=thrombus_transformed,
-                                           radius = cfg["mask_size"])
-            print(mask_point.shape, mask_point.sum())
+
+            # Get as thrombus transformed point the centroid of the registered mask 
+            print(registered_mask_img.sum())
+            # mask_point = np.zeros(fixed_img.shape)
+            if registered_mask_img.sum() > 0:
+                thrombus_transformed = derive_centroid(mask=registered_mask_img)
+                
+                # Obtain mask around transformed thrombus points
+                # mask_point = create_mask_point(cta_img = fixed_img, 
+                #                             low_lim=low_lim, 
+                #                             high_lim=up_lim, 
+                #                             point=thrombus_transformed,
+                #                             radius = cfg["mask_size"])
+                # print(mask_point.shape, mask_point.sum())
+
+                # QA
+                # setup_qa(fixed_img=fixed_img, reg_img = new_cta_img, mask_img=mask_point, 
+                #         point=thrombus_transformed, low_lim=low_lim, high_lim = up_lim,
+                #         label = label_type, outfile=outfile.replace(".nii.gz", ".png"),
+                #         outfile_qa=outfile_qa)
+                setup_qa(fixed_img=fixed_img, reg_img = new_cta_img, moving_img=moving_img,
+                          mask_img=registered_mask_img, thrombus_mask = thrombus_mask, 
+                          point=thrombus_transformed,point_orig=thrombus, low_lim=low_lim, 
+                          high_lim = up_lim,label = label_type, 
+                          outfile=outfile.replace(".nii.gz", ".png"), circle = circular_mask, 
+                          outfile_qa=outfile_qa)
 
             # Save mask information on transformed thrombus point
-            mask_image = sitk.GetImageFromArray(mask_point.astype(np.float32))
-            mask_image.CopyInformation(fixed_image)
-            sitk.WriteImage(mask_image, outfile) 
+            # mask_image = sitk.GetImageFromArray(mask_point.astype(np.float32))
+            # mask_image.CopyInformation(fixed_image)
+            # sitk.WriteImage(mask_image, outfile) 
+            sitk.WriteImage(registered_mask, outfile)
+
             # Obtain also instance information in json file and save it also
-            instance_info = create_instance(mask = mask_point)
+            instance_info = create_instance(mask = registered_mask_img)
             instance_file = outfile.replace(".nii.gz", ".json") 
             write_data(data = instance_info, filename=instance_file)
-
-            # QA
-            setup_qa(fixed_img=fixed_img, reg_img = new_cta_img, mask_img=mask_point, 
-                     point=thrombus_transformed, low_lim=low_lim, high_lim = up_lim,
-                     outfile=outfile.replace(".nii.gz", ".png"),
-                     outfile_qa=outfile_qa)
 
             print(f"Ellapsed time: {time.time()-init}sec")
     
