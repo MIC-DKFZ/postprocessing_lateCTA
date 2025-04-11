@@ -396,7 +396,7 @@ def main(args):
         moving_file, thrombus_file, thrombus_mask_file, label_type = derive_thrombus_files(in_folder = in_folder, cid = cid)
         # Set up output file
         outfile = os.path.join(out_folder, f"{cid}.nii.gz")  # Skip registration and thrombus mask creation, if it has already been processed
-        if os.path.exists(moving_file) and os.path.exists(thrombus_file) and os.path.exists(thrombus_mask_file) and not(os.path.exists(outfile)):
+        if os.path.exists(moving_file) and not(os.path.exists(outfile)):
             print(cid)
             init = time.time()
             # Load fixed file
@@ -409,8 +409,13 @@ def main(args):
             # Load moving file and thrombus file
             moving_image = sitk.ReadImage(moving_file) 
             moving_img = sitk.GetArrayFromImage(moving_image)
-            thrombus = load_thrombus_point(file = thrombus_file)
-            print(thrombus, moving_image.GetSize())
+
+            if os.path.exists(thrombus_file):
+                thrombus = load_thrombus_point(file = thrombus_file)
+                print(thrombus, moving_image.GetSize())
+            else:
+                if not(os.path.exists(thrombus_mask_file)):
+                    continue
             
             # Register moving to fixed CTA images 
             transform_matrix = get_transformation_matrix(fixed=fixed_image, 
@@ -419,28 +424,30 @@ def main(args):
                                                     parameters=p)
 
             # Load thrombus mask  
-            thrombus_mask_image = sitk.ReadImage(thrombus_mask_file)
-            thrombus_mask = sitk.GetArrayFromImage(thrombus_mask_image)
-            registered_mask = apply_transformation(transform_parameters=transform_matrix,
-                                                 moving=thrombus_mask_image,
-                                                 segmentation=True,
-                                                 default_pixel=0)
-            registered_mask.CopyInformation(fixed_image)
-            registered_mask_img = sitk.GetArrayFromImage(registered_mask)
+            registered_mask_img = np.zeros(fixed_img.shape)
+            if os.path.exists(thrombus_mask_file):
+                thrombus_mask_image = sitk.ReadImage(thrombus_mask_file)
+                thrombus_mask = sitk.GetArrayFromImage(thrombus_mask_image)
+                registered_mask = apply_transformation(transform_parameters=transform_matrix,
+                                                    moving=thrombus_mask_image,
+                                                    segmentation=True,
+                                                    default_pixel=0)
+                registered_mask.CopyInformation(fixed_image)
+                registered_mask_img = sitk.GetArrayFromImage(registered_mask)
 
             circular_mask = False
-            if registered_mask_img.sum() == 0:
+            if (registered_mask_img.sum() == 0) or not(os.path.exists(thrombus_mask_file)):
                 # Thrombus content erased during registration, rescuing it from point
                 # Instead create a circular mask based on the thrombus point
 
                 # Apply deformation field to a thrombus mask generated around point of interest 
-                mask_point_orig = create_mask_point(cta_img = moving_img, 
+                thrombus_mask = create_mask_point(cta_img = moving_img, 
                                                 low_lim=low_lim, 
                                                 high_lim=up_lim, 
                                                 point=thrombus,
                                                 radius = cfg["mask_size"])
                 
-                mask_point_orig_image = sitk.GetImageFromArray(mask_point_orig)
+                mask_point_orig_image = sitk.GetImageFromArray(thrombus_mask)
                 mask_point_orig_image.CopyInformation(moving_image)
                 registered_mask = apply_transformation(transform_parameters=transform_matrix,
                                                      moving=mask_point_orig_image,
