@@ -39,17 +39,17 @@ def set_parameters(method='euler', DefaultPixelValue=0, metric='AdvancedMattesMu
 
     # // The following components should usually be left as they are:
     p['Registration'] = ['MultiResolutionRegistration']
-    #p['Interpolator'] = ['BSplineInterpolator']  
-    p['Interpolator'] = ['LinearInterpolator']   # TODO: CHANGE THIS!! 
+    p['Interpolator'] = ['BSplineInterpolator']  
+    # p['Interpolator'] = ['LinearInterpolator']   # TODO: CHANGE THIS!! 
     p['ResampleInterpolator'] = ['FinalBSplineInterpolator']
     p['Resampler'] = ['DefaultResampler']
 
     # // These may be changed to Fixed/MovingSmoothingImagePyramid.
     # // See the manual.
-    # p['FixedImagePyramid'] = ['FixedRecursiveImagePyramid'] 
-    # p['MovingImagePyramid'] = ['MovingRecursiveImagePyramid']
-    p['FixedImagePyramid'] = ['FixedSmoothingImagePyramid'] # TODO: CHANGE THIS!!
-    p['MovingImagePyramid'] = ['MovingSmoothingImagePyramid'] # TODO: CHANGE THIS!!
+    p['FixedImagePyramid'] = ['FixedRecursiveImagePyramid'] 
+    p['MovingImagePyramid'] = ['MovingRecursiveImagePyramid']
+    # p['FixedImagePyramid'] = ['FixedSmoothingImagePyramid'] # TODO: CHANGE THIS!!
+    # p['MovingImagePyramid'] = ['MovingSmoothingImagePyramid'] # TODO: CHANGE THIS!!
     # //(FixedImagePyramid "FixedSmoothingImagePyramid")
     # //(MovingImagePyramid "MovingSmoothingImagePyramid")
     # // The following components are most important:
@@ -86,10 +86,10 @@ def set_parameters(method='euler', DefaultPixelValue=0, metric='AdvancedMattesMu
     # // for the mutual information. 16 or 32 usually works fine.
     # // You could also employ a hierarchical strategy:
     # //(NumberOfHistogramBins 16 32 64)
-    # p['NumberOfHistogramBins'] = ['64']
-    p['NumberOfHistogramBins'] = ['32'] # TODO: change this!!
-    p['ASGDParameterEstimationMethod'] = ['DisplacementDistribution'] # TODO: REMOVE THIS!!
-    p['MaximumNumberOfIterations'] = ['2000'] # TODO: REMOVE THIS!!         
+    p['NumberOfHistogramBins'] = ['64']
+    # p['NumberOfHistogramBins'] = ['32'] # TODO: change this!!
+    # p['ASGDParameterEstimationMethod'] = ['DisplacementDistribution'] # TODO: REMOVE THIS!!
+    # p['MaximumNumberOfIterations'] = ['2000'] # TODO: REMOVE THIS!!         
     # // If you use a mask, this option is important.
     # // If the mask serves as region of interest, set it to false.
     # // If the mask indicates which pixels are valid, then set it to true.
