@@ -3,7 +3,7 @@ import shutil
 import argparse
 import time
 
-def derive_cids(cta_folder : os.PathLike, time_folder : os.PathLike, thrombus_folder : os.PathLike) -> list:
+def derive_cids(cta_folder : os.PathLike, time_folder : os.PathLike, thrombus_folder : os.PathLike, process : str = "tta") -> list:
     """
     Derive case IDs of interest: they should be all in the CTA, in the time,
     and in the thrombus folder
@@ -13,6 +13,7 @@ def derive_cids(cta_folder : os.PathLike, time_folder : os.PathLike, thrombus_fo
     cta_folder : folder with CTA data
     time_folder : folder with time data
     thrombus_folder : folder with thrombus data
+    process : type of data to be processed as additional channel
 
     Returns
     -------
@@ -27,15 +28,20 @@ def derive_cids(cta_folder : os.PathLike, time_folder : os.PathLike, thrombus_fo
     time_files = sorted(os.listdir(time_folder))
     bin_ids, norm_ids = [], []
 
-    for time_file in time_files:
-        if "_bin.nii.gz" in time_file:
-            # ID for time binary file 
-            bin_ids.append(time_file.replace("_bin.nii.gz", ""))
-        elif "_norm.nii.gz" in time_file:
-            # ID for time normalized file 
-            norm_ids.append(time_file.replace("_norm.nii.gz", ""))
+    if process != "late":
+        for time_file in time_files:
+            if "_bin.nii.gz" in time_file:
+                # ID for time binary file 
+                bin_ids.append(time_file.replace("_bin.nii.gz", ""))
+            elif "_norm.nii.gz" in time_file:
+                # ID for time normalized file 
+                norm_ids.append(time_file.replace("_norm.nii.gz", ""))
+        time_cids = list(set(bin_ids) & set(norm_ids))
+    else:
+        time_cids = [f.replace(".nii.gz", "") for f in time_files if ".nii.gz" in f] 
 
-    time_cids = list(set(bin_ids) & set(norm_ids))
+
+    
 
 
     # Derive IDs from thrombus folder
@@ -60,7 +66,7 @@ def main(args):
     assert os.path.exists(cta_folder), f"CTA data folder '{cta_folder}' does not exist"
     assert os.path.exists(thrombus_folder), f"Thrombus data folder '{thrombus_folder}' does not exist"
     assert os.path.exists(os.path.dirname(out_folder)), f"Parent of output data folder '{os.path.dirname(out_folder)}' does not exist"
-    assert process.lower().strip() in ["none", "tta", "bin"], f"Process '{process}' not 'none', nor 'tta', 'bin'"
+    assert process.lower().strip() in ["none", "tta", "bin", "late"], f"Process '{process}' not 'none', nor 'tta', nor 'bin', nor 'late'"
 
     # Create output folder if it does not exist
     if not(os.path.exists(out_folder)):
@@ -68,7 +74,8 @@ def main(args):
 
     # Determine IDs to be processed: they need to have CTA, time, and thrombus information
     cids = derive_cids(cta_folder=cta_folder, time_folder=time_folder,
-                       thrombus_folder=thrombus_folder)
+                       thrombus_folder=thrombus_folder, 
+                       process = process.lower().strip())
 
     # Set up the tree of output directories
     raw_folder = os.path.join(out_folder, "raw_splitted") 
@@ -114,6 +121,8 @@ def main(args):
             time_file = os.path.join(time_folder, f"{cid}_bin.nii.gz") 
         elif process.lower().strip() == "tta":
             time_file = os.path.join(time_folder, f"{cid}_norm.nii.gz") 
+        elif process.lower().strip() == "late":
+            time_file = os.path.join(time_folder, f"{cid}.nii.gz") 
         time_outfile = os.path.join(image_folder, f"{cid}_0001.nii.gz")
 
         if time_file is not None:
@@ -126,7 +135,7 @@ def get_args():
     parser.add_argument("--t", help="Folder with preprocessed TTA data", required=True, type=str)
     parser.add_argument("--cta", help="Folder with preprocessed CTA data", required=True, type=str)
     parser.add_argument("--thrombus", help="Folder with preprocessed thrombus data", required=True, type=str)
-    parser.add_argument("--process", help="Processing required ('none', 'tta', 'bin')", default="none", type=str)
+    parser.add_argument("--process", help="Processing required ('none', 'tta', 'bin', 'late')", default="none", type=str)
     parser.add_argument("--out", help="Output folder with data to be processed by nnDetection", required=True, type=str)
 
     args = parser.parse_args()
