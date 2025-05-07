@@ -345,8 +345,6 @@ def segment_brain_components(cta_folder : os.PathLike, segm_folder : os.PathLike
         brain_segm_image.CopyInformation(image)
         cca_segm_image = sitk.GetImageFromArray(cca_segm)
         cca_segm_image.CopyInformation(image)
-        cca_segm_image = sitk.GetImageFromArray(cca_segm)
-        cca_segm_image.CopyInformation(image)
         ica_segm_image = sitk.GetImageFromArray(ica_segm)
         ica_segm_image.CopyInformation(image)
         sitk.WriteImage(skull_segm_image, skull_file)
