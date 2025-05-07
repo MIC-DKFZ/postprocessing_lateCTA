@@ -235,6 +235,7 @@ def main(args):
 
         # Iterate through IDs 
         for cid in cids:
+            print(f"Processing case ID: {cid}")
             ct_file = os.path.join(cta_folder, f"{cid}.nii.gz")
             ct_image = sitk.ReadImage(ct_file)
         
@@ -328,7 +329,7 @@ def main(args):
 
             median_artery, median_vein = np.median(final_artery_hus), np.median(final_vein_hus)
 
-            qa[cid] = [r, median_artery, median_vein]  
+            qa[cid] = [float(r), float(median_artery), float(median_vein)]  
 
             # Phase computation
             phase = phase_derivation(hu_a = median_artery,
@@ -340,6 +341,10 @@ def main(args):
             phase_results[cid] =  phase
             write_data(data = phase_results, 
                        filename=outfile) 
+            
+            # Store QA results
+            write_data(data = qa,
+                       filename=qa_file) 
 
                
 
@@ -355,5 +360,5 @@ def get_args():
 
 if __name__ == "__main__":
     t1 = time.time()
-    main(get_args)
-    print("Time ellapsed: ", time.time() -t1)
+    main(get_args())
+    print("Time ellapsed (seconds): ", time.time() -t1)
