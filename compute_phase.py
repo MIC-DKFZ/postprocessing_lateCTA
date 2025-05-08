@@ -41,9 +41,13 @@ def prepare_data_gmm(img : np.ndarray, mask : np.ndarray, brain_mask : np.ndarra
     hus = [img[(mask > 0) & (brain_mask > 0)].flatten()] 
     # Derive joint information 
     info =  np.vstack(coords + hus).T
-    # Standardize information
-    std_info = StandardScaler().fit_transform(info) 
-    return np.array(hus).squeeze(), np.vstack(coords).T, std_info
+
+    if info.shape[0] > 0: 
+        # Standardize information if there is available brain information
+        std_info = StandardScaler().fit_transform(info) 
+        return np.array(hus).squeeze(), np.vstack(coords).T, std_info
+    else:
+        return None, None, None
 
 
 def gmm_model(data : np.ndarray, coords : np.ndarray, hus : np.ndarray) -> np.ndarray:
@@ -67,11 +71,6 @@ def gmm_model(data : np.ndarray, coords : np.ndarray, hus : np.ndarray) -> np.nd
     labels = gmm.fit_predict(data)
     unique_labels = np.unique(labels)
 
-    # Iterate through labels
-    for l in unique_labels:
-        hu = hus[labels == l]
-        print(hu.min(), hu.max(), hu.mean(), np.median(hu))
-
     medians = np.array([np.median(hus[labels == l]) for l in unique_labels])
     high_label = unique_labels[np.argmax(medians)] 
 
@@ -83,8 +82,11 @@ def gmm_model(data : np.ndarray, coords : np.ndarray, hus : np.ndarray) -> np.nd
     # Make really sure that we are capturing vessel information
     # Avoid at the same time outliers 
     mask_hus = (out_hus < np.percentile(out_hus.flatten(), 99)) & (out_hus >= np.percentile(out_hus.flatten(), 95)) 
-    out_coords = out_coords[mask_hus] 
-    out_hus = out_hus[mask_hus]  
+    if mask_hus.sum() > 0:
+        # filter to include only high values in the ROI, 
+        # making sure that we only take vessel values 
+        out_coords = out_coords[mask_hus] 
+        out_hus = out_hus[mask_hus]  
 
     return out_hus, out_coords
 
@@ -110,9 +112,9 @@ def phase_derivation(hu_a : float, hu_v : float) -> float:
     phase = -1 # Undetermined phase label
     if (hu_a > hu_v) and (hu_v <= 200):
         phase = 0
-    elif (hu_a-hu_v >= 100) and (hu_v > 200):
+    elif (hu_a-hu_v >= 100) and (hu_v > 200) and (hu_a >= hu_v):
         phase = 1
-    elif (hu_a-hu_v < 100) and (hu_v > 200):
+    elif (hu_a-hu_v < 100) and (hu_v > 200) and (hu_a >= hu_v):
         phase = 2
     elif (hu_a < hu_v) and (hu_a > 200):
         phase = 3
@@ -273,31 +275,56 @@ def main(args):
             vein_hu, vein_coords, vein_data = prepare_data_gmm(img = new_cta_img, 
                                                                mask = vof, 
                                                                brain_mask = brain_mask)
-
-            # Obtain HUs and coordinates from selected arterial and venous areas
-            final_artery_hus, final_artery_coords = gmm_model(data=artery_data, 
-                                                              hus=artery_hu, 
-                                                              coords=artery_coords)
-            final_vein_hus, final_vein_coords = gmm_model(data=vein_data, 
-                                                          hus=vein_hu, 
-                                                          coords=vein_coords)
-
-            # Prepare images with segmented areas used for phase computation, for QA 
-            final_coords = np.vstack([final_artery_coords, 
-                                      final_vein_coords])
-            segmented_parts = np.zeros(new_cta_img.shape, dtype=bool)
-            segmented_parts[final_coords[:,0], final_coords[:,1], final_coords[:,2]] = True
-
-            # Dilate segmented area for better visualization 
-            segmented_parts = binary_dilation(segmented_parts, 
-                                              iterations=10).astype(float)
-            median_coord = np.median(final_coords, 
-                                     axis=0).astype(int).squeeze()
             
+            # Windowed image for QA plotting 
             new_cta_img_w = apply_window(image = new_cta_img, 
-                                         window_center = 55, 
-                                         window_width = 110) 
+                                        window_center = 55, 
+                                        window_width = 110) 
             
+            if (artery_data is not None) and (vein_data is not None):
+
+                # Obtain HUs and coordinates from selected arterial and venous areas
+                final_artery_hus, final_artery_coords = gmm_model(data=artery_data, 
+                                                                hus=artery_hu, 
+                                                                coords=artery_coords)
+                final_vein_hus, final_vein_coords = gmm_model(data=vein_data, 
+                                                            hus=vein_hu, 
+                                                            coords=vein_coords)
+
+                # Prepare images with segmented areas used for phase computation, for QA 
+                final_coords = np.vstack([final_artery_coords, 
+                                        final_vein_coords])
+                segmented_parts = np.zeros(new_cta_img.shape, dtype=bool)
+                segmented_parts[final_coords[:,0], final_coords[:,1], final_coords[:,2]] = True
+
+                # Dilate segmented area for better visualization 
+                segmented_parts = binary_dilation(segmented_parts, 
+                                                iterations=5).astype(float)
+                median_coord = np.median(final_coords, 
+                                        axis=0).astype(int).squeeze()
+                
+                
+
+                median_artery, median_vein = np.median(final_artery_hus), np.median(final_vein_hus)
+
+                # Phase computation
+                phase = phase_derivation(hu_a = median_artery,
+                                        hu_v=median_vein)
+                
+                qa[cid] = [float(round(r,3)), float(round(median_artery,2)), float(round(median_vein,2)), float(round(phase))]  
+
+                # Store phase results
+                phase_results[cid] = phase
+
+            else:
+                # Default values in case the brain segmentation in the registered image fails 
+                phase_results[cid] = -1
+                qa[cid] = [float(round(r,3)), float(-1.), float(-1.), float(-1.)]  
+                median_coord = np.array(new_cta_img.shape)//2 # Just plot middle slices  
+                
+                
+            print(qa[cid])
+
             plt.figure()
             plt.subplot(231)
             plt.imshow(new_cta_img_w[median_coord[0]], cmap="gray")
@@ -307,6 +334,7 @@ def main(args):
             plt.imshow(new_cta_img_w[:,median_coord[1]], cmap="gray")
             plt.xticks([])
             plt.yticks([])
+            plt.title(qa[cid])
             plt.subplot(233)
             plt.imshow(new_cta_img_w[:,:,median_coord[2]], cmap="gray")
             plt.xticks([])
@@ -325,26 +353,15 @@ def main(args):
             plt.yticks([])
             plt.savefig(os.path.join(os.path.dirname(outfile), f"{cid}_qa.png"))
 
-            
-
-            median_artery, median_vein = np.median(final_artery_hus), np.median(final_vein_hus)
-
-            qa[cid] = [float(r), float(median_artery), float(median_vein)]  
-
-            # Phase computation
-            phase = phase_derivation(hu_a = median_artery,
-                                    hu_v=median_vein)
-            
-            print([cid, r, median_artery, median_vein, phase])
-
-            # Store phase results
-            phase_results[cid] =  phase
+            # Store phase results 
             write_data(data = phase_results, 
-                       filename=outfile) 
-            
+                        filename=outfile) 
+                
             # Store QA results
             write_data(data = qa,
-                       filename=qa_file) 
+                    filename=qa_file) 
+
+
 
                
 
