@@ -8,6 +8,7 @@ from typing import Union
 import time
 import nibabel as nib
 from scipy.ndimage import binary_dilation
+import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 
 from utils.load_save import load_data, write_data
@@ -64,6 +65,8 @@ def gmm_model(data : np.ndarray, coords : np.ndarray, hus : np.ndarray) -> np.nd
     Returns
     -------
     out_hus : output Hounsfield units
+    out_coords : outputted coordinates where ROI is taken
+    original_coords : original coordinates before any threshold-based masking
     
     """
     k = 2
@@ -81,6 +84,7 @@ def gmm_model(data : np.ndarray, coords : np.ndarray, hus : np.ndarray) -> np.nd
     # Consider values between the 95th and the 99th percentiles of the second cluster found, only
     # Make really sure that we are capturing vessel information
     # Avoid at the same time outliers 
+    original_coords = out_coords.copy()
     mask_hus = (out_hus < np.percentile(out_hus.flatten(), 99)) & (out_hus >= np.percentile(out_hus.flatten(), 95)) 
     if mask_hus.sum() > 0:
         # filter to include only high values in the ROI, 
@@ -88,7 +92,7 @@ def gmm_model(data : np.ndarray, coords : np.ndarray, hus : np.ndarray) -> np.nd
         out_coords = out_coords[mask_hus] 
         out_hus = out_hus[mask_hus]  
 
-    return out_hus, out_coords
+    return out_hus, out_coords, original_coords
 
 
 def phase_derivation(hu_a : float, hu_v : float) -> float:
@@ -180,6 +184,32 @@ def apply_window(image : np.ndarray, window_center : float, window_width : float
     windowed = (windowed - lower) / window_width  # Normalize to [0, 1]
     return windowed
 
+
+def derive_bbox(mask : np.ndarray) -> list:
+    """
+    Derive bounding box with extreme coordinates of mask in image slice
+    Derive as matplotlib patch for plotting
+
+    Params
+    ------
+    mask : input mask
+
+    Returns
+    -------
+    bbox : bounding box
+    
+    """
+    mask_coords = np.where(mask > 0)
+    x_min, x_max, y_min, y_max = np.percentile(mask_coords[1],5), np.percentile(mask_coords[1],95), np.percentile(mask_coords[0],5), np.percentile(mask_coords[0], 95) 
+    h, w = abs(x_max - x_min), abs(y_max-y_min)
+
+    bbox = patches.Rectangle(
+        (x_min, y_min), h, w,
+        linewidth=1, edgecolor='red', facecolor='none'
+    )
+
+    return bbox
+
 def main(args):
     atlas_folder = args.atlas
     cta_folder = args.cta
@@ -187,7 +217,9 @@ def main(args):
 
     assert os.path.exists(atlas_folder), f"Atlas folder '{atlas_folder}' does not exist"
     assert os.path.exists(cta_folder), f"CTA folder '{cta_folder}' does not exist"
-    assert os.path.exists(os.path.dirname(outfile)), f"Parent folder of output phase file '{os.path.dirname(outfile)}' does not exist"
+
+    if not(os.path.exists(os.path.dirname(outfile))):
+        os.makedirs(os.path.dirname(outfile))
 
     # Load case IDs
     cta_files = sorted(os.listdir(cta_folder))
@@ -284,27 +316,35 @@ def main(args):
             if (artery_data is not None) and (vein_data is not None):
 
                 # Obtain HUs and coordinates from selected arterial and venous areas
-                final_artery_hus, final_artery_coords = gmm_model(data=artery_data, 
+                final_artery_hus, final_artery_coords, original_artery_coords = gmm_model(data=artery_data, 
                                                                 hus=artery_hu, 
                                                                 coords=artery_coords)
-                final_vein_hus, final_vein_coords = gmm_model(data=vein_data, 
+                final_vein_hus, final_vein_coords, original_vein_coords = gmm_model(data=vein_data, 
                                                             hus=vein_hu, 
                                                             coords=vein_coords)
 
                 # Prepare images with segmented areas used for phase computation, for QA 
                 final_coords = np.vstack([final_artery_coords, 
                                         final_vein_coords])
-                segmented_parts = np.zeros(new_cta_img.shape, dtype=bool)
-                segmented_parts[final_coords[:,0], final_coords[:,1], final_coords[:,2]] = True
+                original_coords = np.vstack([original_artery_coords, 
+                                        original_vein_coords])
+                median_artery_coord = np.median(original_artery_coords, 
+                                                 axis = 0).astype(int).squeeze()
+                median_vein_coord = np.median(original_vein_coords, 
+                                                 axis = 0).astype(int).squeeze()
+                segmented_parts_artery = np.zeros(new_cta_img.shape, dtype=bool)
+                segmented_parts_vein = np.zeros(new_cta_img.shape, dtype=bool)
+                segmented_parts_artery[original_artery_coords[:,0], original_artery_coords[:,1], original_artery_coords[:,2]] = True
+                segmented_parts_vein[original_vein_coords[:,0], original_vein_coords[:,1], original_vein_coords[:,2]] = True
 
                 # Dilate segmented area for better visualization 
-                segmented_parts = binary_dilation(segmented_parts, 
-                                                iterations=5).astype(float)
-                median_coord = np.median(final_coords, 
-                                        axis=0).astype(int).squeeze()
+                # segmented_parts = binary_dilation(segmented_parts, 
+                #                                 iterations=5).astype(float)
+                # median_coord = np.median(final_coords, 
+                #                         axis=0).astype(int).squeeze()
                 
                 
-
+                # Artery and vein value computation 
                 median_artery, median_vein = np.median(final_artery_hus), np.median(final_vein_hus)
 
                 # Phase computation
@@ -316,42 +356,47 @@ def main(args):
                 # Store phase results
                 phase_results[cid] = phase
 
+                # plt.figure()
+                fig, ax = plt.subplots(2, 3)
+                img2d = segmented_parts_artery[median_artery_coord[0]]
+                bbox = derive_bbox(mask = img2d)
+                ax[0,0].imshow(new_cta_img_w[median_artery_coord[0]], cmap="gray")
+                ax[0,0].add_patch(bbox)
+                img2d = segmented_parts_artery[:,median_artery_coord[1]]
+                bbox = derive_bbox(mask = img2d)
+                ax[0,1].imshow(new_cta_img_w[:,median_artery_coord[1]], cmap='gray')
+                ax[0,1].add_patch(bbox)
+                img2d = segmented_parts_artery[:,:,median_artery_coord[2]]
+                bbox = derive_bbox(mask = img2d)
+                ax[0,2].imshow(new_cta_img_w[:,:,median_artery_coord[2]], cmap='gray')
+                ax[0,2].add_patch(bbox)
+
+                img2d = segmented_parts_vein[median_vein_coord[0]]
+                bbox = derive_bbox(mask = img2d)
+                ax[1,0].imshow(new_cta_img_w[median_vein_coord[0]], cmap="gray")
+                ax[1,0].add_patch(bbox)
+                img2d = segmented_parts_vein[:,median_vein_coord[1]]
+                bbox = derive_bbox(mask = img2d)
+                ax[1,1].imshow(new_cta_img_w[:,median_vein_coord[1]], cmap='gray')
+                ax[1,1].add_patch(bbox)
+                img2d = segmented_parts_vein[:,:,median_vein_coord[2]]
+                bbox = derive_bbox(mask = img2d)
+                ax[1,2].imshow(new_cta_img_w[:,:,median_vein_coord[2]], cmap='gray')
+                ax[1,2].add_patch(bbox)
+
+                fig.savefig(os.path.join(os.path.dirname(outfile), f"{cid}_qa.png"))
+
             else:
                 # Default values in case the brain segmentation in the registered image fails 
                 phase_results[cid] = -1
                 qa[cid] = [float(round(r,3)), float(-1.), float(-1.), float(-1.)]  
                 median_coord = np.array(new_cta_img.shape)//2 # Just plot middle slices  
+                segmented_parts_artery, segmented_parts_vein = np.zeros(new_cta_img.shape), np.zeros(new_cta_img.shape)
                 
                 
             print(qa[cid])
 
-            plt.figure()
-            plt.subplot(231)
-            plt.imshow(new_cta_img_w[median_coord[0]], cmap="gray")
-            plt.xticks([])
-            plt.yticks([])
-            plt.subplot(232)
-            plt.imshow(new_cta_img_w[:,median_coord[1]], cmap="gray")
-            plt.xticks([])
-            plt.yticks([])
-            plt.title(qa[cid])
-            plt.subplot(233)
-            plt.imshow(new_cta_img_w[:,:,median_coord[2]], cmap="gray")
-            plt.xticks([])
-            plt.yticks([])
-            plt.subplot(234)
-            plt.imshow(segmented_parts[median_coord[0]], cmap="gray")
-            plt.xticks([])
-            plt.yticks([])
-            plt.subplot(235)
-            plt.imshow(segmented_parts[:,median_coord[1]], cmap="gray")
-            plt.xticks([])
-            plt.yticks([])
-            plt.subplot(236)
-            plt.imshow(segmented_parts[:,:,median_coord[2]], cmap="gray")
-            plt.xticks([])
-            plt.yticks([])
-            plt.savefig(os.path.join(os.path.dirname(outfile), f"{cid}_qa.png"))
+            
 
             # Store phase results 
             write_data(data = phase_results, 
@@ -366,7 +411,12 @@ def main(args):
                
 
 def get_args():
-    # Prepare validation set for nnDet experiment as .json and .pkl file
+    #  Rule-based derivation of CTA phase, see:
+
+    # "Rodriguez-Luna, et al (2014). Venous phase of computed tomography 
+    # angiography increases spot sign detection, but intracerebral hemorrhage 
+    # expansion is greater in spot signs detected in arterial phase."
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--atlas", help="Folder with atlas information", required=True, type=str)
     parser.add_argument("--cta", help="Folder with CTA information", required=True, type=str)
