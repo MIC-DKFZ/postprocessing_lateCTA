@@ -80,7 +80,7 @@ def segment_ica(img) -> np.ndarray:
 
 
 
-def segment_brain(img : np.ndarray) -> Union[np.ndarray, np.ndarray, np.ndarray]:
+def segment_brain(img) -> Union[np.ndarray, np.ndarray, np.ndarray]:
     """
     Segment brain, skull and common carotid artery from image with TotalSegmentator
 
