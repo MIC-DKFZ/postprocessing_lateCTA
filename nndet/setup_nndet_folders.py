@@ -2,6 +2,8 @@ import os,sys
 import shutil
 import argparse
 import time
+import SimpleITK as sitk
+import numpy as np
 
 def derive_cids(cta_folder : os.PathLike, time_folder : os.PathLike, thrombus_folder : os.PathLike, process : str = "tta") -> list:
     """
@@ -28,7 +30,7 @@ def derive_cids(cta_folder : os.PathLike, time_folder : os.PathLike, thrombus_fo
     time_files = sorted(os.listdir(time_folder))
     bin_ids, norm_ids = [], []
 
-    if process != "late":
+    if (process != "late") and (process != "dist"):
         for time_file in time_files:
             if "_bin.nii.gz" in time_file:
                 # ID for time binary file 
@@ -66,7 +68,7 @@ def main(args):
     assert os.path.exists(cta_folder), f"CTA data folder '{cta_folder}' does not exist"
     assert os.path.exists(thrombus_folder), f"Thrombus data folder '{thrombus_folder}' does not exist"
     assert os.path.exists(os.path.dirname(out_folder)), f"Parent of output data folder '{os.path.dirname(out_folder)}' does not exist"
-    assert process.lower().strip() in ["none", "tta", "bin", "late"], f"Process '{process}' not 'none', nor 'tta', nor 'bin', nor 'late'"
+    assert process.lower().strip() in ["none", "tta", "bin", "late", "dist"], f"Process '{process}' not 'none', nor 'tta', nor 'bin', nor 'late'"
 
     # Create output folder if it does not exist
     if not(os.path.exists(out_folder)):
@@ -121,11 +123,17 @@ def main(args):
             time_file = os.path.join(time_folder, f"{cid}_bin.nii.gz") 
         elif process.lower().strip() == "tta":
             time_file = os.path.join(time_folder, f"{cid}_norm.nii.gz") 
-        elif process.lower().strip() == "late":
+        elif (process.lower().strip() == "late") or (process.lower().strip() == "dist"):
             time_file = os.path.join(time_folder, f"{cid}.nii.gz") 
         time_outfile = os.path.join(image_folder, f"{cid}_0001.nii.gz")
 
         if time_file is not None:
+            # time_image = sitk.ReadImage(time_file)
+            # time_img = sitk.GetArrayFromImage(time_image)
+            # time_img = np.clip(time_img, 0, 1)
+            # time_image_out = sitk.GetImageFromArray(time_img)
+            # time_image_out.CopyInformation(time_image)
+            # sitk.WriteImage(time_image_out, time_outfile)
             shutil.copyfile(time_file, time_outfile)
         
       
@@ -135,7 +143,7 @@ def get_args():
     parser.add_argument("--t", help="Folder with preprocessed TTA data", required=True, type=str)
     parser.add_argument("--cta", help="Folder with preprocessed CTA data", required=True, type=str)
     parser.add_argument("--thrombus", help="Folder with preprocessed thrombus data", required=True, type=str)
-    parser.add_argument("--process", help="Processing required ('none', 'tta', 'bin', 'late')", default="none", type=str)
+    parser.add_argument("--process", help="Processing required ('none', 'tta', 'bin', 'late', 'dist')", default="none", type=str)
     parser.add_argument("--out", help="Output folder with data to be processed by nnDetection", required=True, type=str)
 
     args = parser.parse_args()
