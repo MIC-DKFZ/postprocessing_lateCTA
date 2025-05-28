@@ -1,0 +1,127 @@
+import os,sys
+import shutil
+import numpy as np
+import SimpleITK as sitk
+import argparse
+import time
+from scipy.stats import rankdata
+
+
+
+def time2rank(time_img : np.ndarray) -> np.ndarray:
+    """
+    Convert time to rank image
+
+    Params
+    ------
+    time_img : time vessel image
+
+    Returns
+    -------
+    rank : rank image
+    
+    """
+    mask = time_img > 0
+    foreground_vals = time_img[mask].flatten()
+    ranks = rankdata(foreground_vals, 
+                     method='average')
+    percentiles = (ranks - 1) / (len(foreground_vals) - 1)
+    rank = np.zeros(time_img.shape, 
+                    dtype=np.float32)
+    rank[mask] = percentiles
+
+    return rank
+    
+
+def main(args):
+    cta_folder = args.c
+    dist_folder = args.d
+    time_folder = args.t
+    out_folder = args.o
+
+    assert os.path.exists(cta_folder), f"CTA folder '{cta_folder}' does not exist"
+    assert os.path.exists(dist_folder), f"Distance folder '{dist_folder}' does not exist"
+    assert os.path.exists(time_folder), f"Time folder '{time_folder}' does not exist"
+    assert os.path.exists(os.path.dirname(out_folder)), f"Parent output folder '{os.path.dirname(out_folder)}' does not exist"
+
+    # Obtain CIDs
+    cta_cids = np.array([f.replace(".nii.gz", "") for f in sorted(os.listdir(cta_folder))], dtype=str) 
+    dist_cids = np.array([f.replace(".nii.gz", "") for f in sorted(os.listdir(dist_folder))], dtype=str) 
+    time_cids = np.array([f.replace(".nii.gz", "") for f in sorted(os.listdir(time_folder))], dtype=str) 
+    common_cids = np.intersect1d(cta_cids, dist_cids)
+    common_cids = np.intersect1d(common_cids, time_cids)
+
+    # Set up output folders
+    train_folder = os.path.join(out_folder, "raw_splitted", "imagesTr") 
+    label_folder = os.path.join(out_folder, "raw_splitted", "labelsTr") 
+
+    if not(os.path.exists(train_folder)):
+        os.makedirs(train_folder)
+
+    if not(os.path.exists(label_folder)):
+        os.makedirs(label_folder)
+
+    # Iterate through IDs
+    for i in common_cids:
+        print(i) 
+        # Retrieve files
+        # CTA file
+        cta_file = os.path.join(cta_folder, f"{i}.nii.gz")
+
+        # Identify inferior and superior rows where to apply trimming for distance map
+        cta_image = sitk.ReadImage(cta_file)
+        cta_img = sitk.GetArrayFromImage(cta_image)
+        cta_img[cta_img == -1024] = 0
+        sum_rows = np.sum(cta_img, axis=(1,2))
+        ind_rows = np.where(sum_rows == 0)[0]
+        low_lim, high_lim = 0, cta_img.shape[0]-1
+        if ind_rows.shape[0] > 0:  
+            lower_rows = ind_rows[ind_rows < cta_img.shape[0]//2]  
+            upper_rows = ind_rows[ind_rows > cta_img.shape[0]//2] 
+            low_lim, high_lim = lower_rows.max(), upper_rows.min()
+
+
+        # Time file
+        time_file = os.path.join(time_folder, f"{i}.nii.gz")
+
+        # Distance file: trim it with CTA information
+        out_dist_file = os.path.join(label_folder, f"{i}_dist.nii.gz")
+        dist_file = os.path.join(dist_folder, f"{i}.nii.gz") 
+        dist_image = sitk.ReadImage(dist_file)
+        dist_img = sitk.GetArrayFromImage(dist_image)
+        dist_img[:low_lim] = dist_img.max()
+        dist_img[high_lim:] = dist_img.min()
+        dist_image_trim = sitk.GetImageFromArray(dist_img)
+        dist_image_trim.CopyInformation(dist_image)
+        sitk.WriteImage(dist_image_trim, out_dist_file)  
+
+        # Copy CTA file 
+        out_cta_file = os.path.join(train_folder, f"{i}.nii.gz")   
+        shutil.copyfile(cta_file, out_cta_file)
+
+        # Convert time image into rank image
+        out_time_file = os.path.join(label_folder, f"{i}_time.nii.gz")
+        time_image = sitk.ReadImage(time_file)
+        time_img = sitk.GetArrayFromImage(time_image) 
+        rank_img = time2rank(time_img=time_img)
+        rank_image = sitk.GetImageFromArray(rank_img.astype(np.float32))
+        rank_image.CopyInformation(time_image)
+        sitk.WriteImage(rank_image, out_time_file)
+
+
+def get_args():
+    # Remove predictions outside of lately enhanced regions 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--c", help="CTA folder", required=True, type=str)
+    parser.add_argument("--t", help="Time map folder", required=True, type=str)
+    parser.add_argument("--d", help="Distance map folder", required=True, type=str)
+    parser.add_argument("--o", help="Output folder", required=True, type=str)
+    args = parser.parse_args()
+
+    return args
+
+
+if __name__ == "__main__":
+    t1 = time.time()
+    main(get_args())
+    print(f"Time ellapsed: {time.time()-t1}sec")
