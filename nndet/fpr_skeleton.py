@@ -709,6 +709,10 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
     dist_image = sitk.ReadImage(dist_file)
     dist_map = sitk.GetArrayFromImage(dist_image)
 
+    # Determine brain mask: place where distance map is non-maximum 
+    brain_coords = np.array(np.where(dist_map < dist_map.max()))
+    brain_centroid = np.median(brain_coords, 1)
+
     # Convert distance map to segmentation
     # segm = distance2segm(dist_map=dist_map, 
     #                      cfg=cfg)  
@@ -745,7 +749,6 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
 
     # Obtain mask with skeleton tips     
     tips = find_endpoints(skeleton=skeleton)
-    tips = tips.T
     tip_mask = compute_tip_image(endpoints=tips, 
                                  shape=skeleton.shape, 
                                  radius=cfg["tip_radius"])
@@ -767,7 +770,7 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
     # Minimum diameter found in foreground
     diameter_map = -diameter_map 
     minimum_diam = np.percentile(diameter_map[diameter_map > 0], 
-                                 cfg["perc_min_diameter"] )
+                                  cfg["perc_min_diameter"] )
     # minimum_diam = diameter_map[diameter_map > 0].min() 
     low_diam_img = ((diameter_map > 0) & (diameter_map <= minimum_diam)).astype(np.uint8)
     # low_diam_image = sitk.GetImageFromArray(low_diam_img)
@@ -791,12 +794,15 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
     # Iterate through each box 
     tp_info, no_tip, no_lowdiam, no_rank = [],[],[],[]     
     scores_removed = [] 
-    filtered_scores = [] 
+    box_info = [] 
     for box, score, l in zip(boxes, scores, labels):
         # Derive patch of interest 
-        # coords = derive_patch_coords(box=box,
-        #                              shape=skeleton.shape)
-        coords = box.astype(int)
+        coords = derive_patch_coords(box=box,
+                                     shape=skeleton.shape)
+        # coords = box.astype(int)
+        center = np.array([coords[0] + coords[2],
+                           coords[1] + coords[3],
+                           coords[-2] + coords[-1]])//2
         patch = skeleton[coords[0] : coords[2],
                          coords[1] : coords[3],
                          coords[-2] : coords[-1]] 
@@ -820,40 +826,26 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
                             coords[-2] : coords[-1]] 
         
         time_vals = time_patch[time_patch > 0]
-        median_time = 0.0 
+        min_time, median_time, max_time, low_diam = 0.0, 0.0, 0.0, 0.0 
         if time_vals.shape[0] > 0:
+            # Get rank values 
             median_time = np.median(time_vals) 
-        time_condition = (median_time > cfg["t_low_percentile"]) & (median_time < cfg["t_high_percentile"])
+            min_time = np.percentile(time_vals, 5)
+            max_time = np.percentile(time_vals, 95)
+        
+        if patch_diam.sum() > 0:
+            low_diam = patch_diam_map[patch_diam_map > 0].min() 
+        
+        # time_condition = (median_time > cfg["t_low_percentile"]) & (median_time < cfg["t_high_percentile"])
+        time_condition = max_time > cfg["t_low_percentile"] 
         
         # keep = (patch_tip.sum() > 0).any() & (patch_diam.sum() > 0).any() & (patch_rank.sum() > 0).any()
         keep = (patch_tip.sum() > 0).any() & (patch_diam.sum() > 0).any() & time_condition
         
-        # Determine score reduction weight
+        # Determine causes for the removal of a positive
         empty_tip = (patch_tip.sum() == 0).all()
         empty_low_diam = (patch_diam.sum() == 0).all()
         empty_rank = not(time_condition)
-        empty_factors = int(empty_tip) + int(empty_low_diam) + int(empty_rank)
-        score_red = 0.75**empty_factors
-
-        # Weights for positive predictions   
-        time_weight = 1-(median_time/(time_map.max() + np.finfo(float).eps))
-        median_diam = 0
-        if patch_diam.sum() > 0:
-            median_diam = patch_diam_map[patch_diam > 0] 
-        diam_weight = 1-(median_diam/(diameter_map.max() + np.finfo(float).eps))
-        box_center = np.array([box[0] + box[2], box[1] + box[3], box[-1] + box[-2]])//2
-
-        # Compute box center to tip points distances
-        distances = np.linalg.norm(tips - box_center, axis=1) 
-        dist_weight = 1-(distances.min()/(distances.max() + np.finfo(float).eps))
-        weight = diam_weight*dist_weight*time_weight
-        print(diam_weight, dist_weight, time_weight)
-        filtered_scores.append(score*weight)
-
-        # keep = (time_patch.sum() > 0).any()
-
-        if not(keep):
-            scores_removed.append(score)
 
         no_tip.append(empty_tip)
         no_lowdiam.append(empty_low_diam)
@@ -864,7 +856,16 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
         else:
             tp_info.append(False)
 
-                
+        if (center.shape[0] > 0) and keep: 
+            # Compute relative location of prediction
+            # Too high or too low positives tend to be FPs  
+            box_vector = (center - brain_centroid)/skeleton.shape 
+            if (box_vector[0] < -0.2) or (box_vector[0] > 0):
+                keep = False
+
+        if not(keep):
+            scores_removed.append(score)
+
         # keep = False
         # if patch_tip.sum() > 0:
         #     keep = True
@@ -881,7 +882,6 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
 
     keep_box = np.array(keep_box, 
                         dtype=bool)
-    filtered_scores = np.array(filtered_scores)
     
     # Forensics for TP removal 
     tp_info = np.array(tp_info, 
@@ -911,14 +911,10 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
 
     
     # Construct filtered results
-    # out_boxes, out_scores, out_labels = filter_out_fps(boxes = boxes, 
-    #                                                     scores = scores, 
-    #                                                     labels=labels, 
-    #                                                     keep = keep_box)
-                
-    out_boxes = boxes.copy()
-    out_labels = labels.copy()
-    out_scores = filtered_scores.copy()
+    out_boxes, out_scores, out_labels = filter_out_fps(boxes = boxes, 
+                                                        scores = scores, 
+                                                        labels=labels, 
+                                                        keep = keep_box)
     
     out_dict["pred_boxes"] = out_boxes
     out_dict["pred_labels"] = out_labels 
@@ -936,8 +932,6 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
 
 
     write_data(data = out_dict, filename=outfile)
-    
-    return keep_box
 
 
 def filter_out_fps(boxes : np.ndarray, scores : np.ndarray, labels : np.ndarray, keep : np.ndarray) -> Union[np.ndarray, np.ndarray, np.ndarray]:
@@ -1002,7 +996,7 @@ def main(args):
     # Iterate through prediction files
     files = sorted(os.listdir(pred_folder))
     Parallel(n_jobs = cfg["workers"])(delayed(process_case)(file, cfg, pred_folder, segm_folder, dist_folder, out_folder, gt_folder) for file in files)
-    
+
             
 
 
