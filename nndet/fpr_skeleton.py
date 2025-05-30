@@ -13,6 +13,7 @@ import time
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(script_dir))
 from utils.load_save import load_data, write_data
+from utils.curvature import extract_inflection_points
 
 
 def masked_median_filter(values, mask_flat):
@@ -538,7 +539,7 @@ def keep_patch(patch : np.ndarray, cfg : dict, time_patch : np.ndarray, time_thr
 
 
 
-def smooth_time(time_map : np.ndarray, q : int = 95, median_filter_size : int = 5) -> Union[np.ndarray, np.ndarray]:
+def smooth_time(time_map : np.ndarray, size_thr : int = 1000, median_filter_size : int = 5) -> Union[np.ndarray, np.ndarray]:
     """
     Smooth time map and remove small connected components
     with a size below that 95 percentile of the sizes of 
@@ -547,8 +548,8 @@ def smooth_time(time_map : np.ndarray, q : int = 95, median_filter_size : int = 
     Params
     ------
     time_map : time map
-    q : percentile used for size thresholding
-    median_filter_size : kernel size for median filter
+    size_thr : size thresholding (default: 1000)
+    median_filter_size : kernel size for median filter (default: 5)
 
     Returns
     -------
@@ -564,13 +565,22 @@ def smooth_time(time_map : np.ndarray, q : int = 95, median_filter_size : int = 
     sizes = np.bincount(label_time.ravel())
 
     # Determine size threshold
-    size_thr = np.percentile(sizes, q)
+    # size_thr = np.percentile(sizes, q)
     labels = np.arange(len(sizes))  # label numbers: 0, 1, 2, ..., num_features
     
     # Exclude background (label 0)
     sizes = sizes[1:]
     labels = labels[1:]
     labels = labels[sizes >= size_thr]
+
+    if labels.shape[0] == 0:
+        # Too harsh filtering applied for connected components
+        # Apply directly map filtering 
+        smoothed = median_filter(input = time_map,
+                                 size=median_filter_size)
+        label_mask = (time_map > 0).astype(np.uint8) 
+
+        return smoothed, label_mask  
 
     # Iterate through the greatest connected components
     smoothed = np.zeros(time_map.shape)
@@ -687,8 +697,9 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
     
     # Smooth time information
     time_smooth, time_cc = smooth_time(time_map=time_map, 
-                              q=cfg["size_percentile"],
+                              size_thr=cfg["size_thr"],
                               median_filter_size=cfg["median_filter_size"])
+
     
     # Obtain vessel borders with erosion
     time_mask = (time_cc > 0)
@@ -729,6 +740,7 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
 
     
     # Dilate skeleton and expand it
+    skeleton_old = skeleton.copy()
     if cfg["expand_skeleton"] == 1:
         dilated_skeleton = dilate_skeleton(skeleton = skeleton)
         skeleton, skeleton_image = skeletonization(segm = dilated_skeleton,
@@ -863,6 +875,11 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
             if (box_vector[0] < -0.2) or (box_vector[0] > 0):
                 keep = False
 
+        if keep:
+            vol = (box[2]-box[0])*(box[3]-box[1])*(box[-1]-box[-2])/1000
+            if (vol < 3) or (vol > 130):
+                keep = False
+
         if not(keep):
             scores_removed.append(score)
 
@@ -911,10 +928,10 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
 
     
     # Construct filtered results
-    out_boxes, out_scores, out_labels = filter_out_fps(boxes = boxes, 
-                                                        scores = scores, 
-                                                        labels=labels, 
-                                                        keep = keep_box)
+    out_boxes, out_scores, out_labels, keep_box = filter_out_fps(boxes = boxes, 
+                                                            scores = scores, 
+                                                            labels=labels, 
+                                                            keep = keep_box)
     
     out_dict["pred_boxes"] = out_boxes
     out_dict["pred_labels"] = out_labels 
@@ -955,20 +972,23 @@ def filter_out_fps(boxes : np.ndarray, scores : np.ndarray, labels : np.ndarray,
     # Obtain keep ratio 
     ratio = keep.sum() / (boxes.shape[0] + np.finfo(float).eps)
 
-    if ratio < 0.1:
+    if ratio < 0.05:
         # If less than 10% of boxes are remaining, we may be removing true positives
-        # Remove only half of the boxes to be removed, with the lowest scores
+        # Keep the boxes with the top scores 
         ind_remove = np.where(keep == False)[0]
         scores_remove = scores[ind_remove]       
         scores_argsort = np.argsort(scores_remove)
-        ind_scores_remove = scores_argsort[:scores_argsort.shape[0]//2]
+        
+        # Keep only 50% of the boxes
+        n_remove = ind_remove.shape[0]//2  
+        ind_scores_remove = scores_argsort[:(-1-n_remove)]
         ind_remove_final = ind_remove[ind_scores_remove]
         keep = np.ones(keep.shape[0], dtype=bool)
         keep[ind_remove_final] = False
 
     out_boxes, out_scores, out_labels = boxes[keep] , scores[keep], labels[keep]
 
-    return out_boxes, out_scores, out_labels
+    return out_boxes, out_scores, out_labels, keep
 
 
 def main(args):

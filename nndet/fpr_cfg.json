@@ -1,6 +1,6 @@
 {"min_size_cc_segm" : 200,
  "min_size_cc_skel" : 20,
- "t_low_percentile" : 40,
+ "t_low_percentile" : 50,
  "t_high_percentile" : 90,
  "min_size_cc_in_patch" : 5,
  "dilation_iters" : 2,
@@ -9,7 +9,7 @@
  "distance_thr" : 0.0,
  "workers" : 12,
  "thr_close_points" : 5.0,
- "size_percentile" : 96,
+ "size_thr" : 300,
  "median_filter_size" : 5,
  "tip_radius" : 5,
  "perc_min_diameter" : 0.5}

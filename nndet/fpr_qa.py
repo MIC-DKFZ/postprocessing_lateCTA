@@ -27,7 +27,7 @@ def plot_differences(boxes1: np.ndarray, boxes2: np.ndarray, shape : tuple) -> U
 
     Returns
     -------
-    mask : mask with differences (1: conserved boxes, 2: removed boxes)
+    mask : mask with differences (1: removed boxes, 2: preserved boxes)
     preserved_boxes : preserved boxes
     removed_boxes : removed boxes
     
@@ -49,19 +49,14 @@ def plot_differences(boxes1: np.ndarray, boxes2: np.ndarray, shape : tuple) -> U
     mask = np.zeros(shape, dtype=np.uint8)
     for i,box in enumerate(boxes1):
         box_int = box.astype(int)
-        if i in ind_common:
+        if i in ind_different:
             mask[box_int[0]: box_int[2], 
                  box_int[1] : box_int[3], 
                  box_int[-2]: box_int[-1]] = 1
         else:
-            u = np.unique(mask[box_int[0]: box_int[2], 
-                            box_int[1] : box_int[3], 
-                            box_int[-2]: box_int[-1]])
-            if not(np.array_equal(u, np.array([0,1]))):
-                # Avoid sections that have already been labelled as preserved  
-                mask[box_int[0]: box_int[2], 
-                    box_int[1] : box_int[3], 
-                    box_int[-2]: box_int[-1]] = 2
+            mask[box_int[0]: box_int[2], 
+                 box_int[1] : box_int[3], 
+                 box_int[-2]: box_int[-1]] = 2
     
     preserved_boxes = boxes1[ind_common]
     removed_boxes = boxes1[ind_different]
@@ -186,7 +181,7 @@ def analyze_tps(gt_folder : os.PathLike, mask : np.ndarray, time_seg : np.ndarra
                     rel_size = size_ind/(sorted_sizes.shape[0] + np.finfo(float).eps)
                     rel_size = rel_size[0] 
                    
-            if (tp_patch == 2).any():
+            if np.array_equal(np.unique(tp_patch), np.array([0,1])):
                 tp_preserved = 0
                 break
 
@@ -312,8 +307,8 @@ def main(args):
 def get_args():
     # Remove predictions outside of lately enhanced regions 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--a", help="FPR folder a)", type=str)
-    parser.add_argument("--b", help="FPR folder b)", type=str)
+    parser.add_argument("--a", help="Reference prediction folder", type=str)
+    parser.add_argument("--b", help="Comparison prediction folder", type=str)
     parser.add_argument("--t", help="Time vessel folder", type=str)
     parser.add_argument("--ref", help="Ground-truth folder", type=str)
     parser.add_argument("--out", help="Output folder with QA", type=str)
