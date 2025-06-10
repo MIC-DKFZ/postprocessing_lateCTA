@@ -13,41 +13,7 @@ import time
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(script_dir))
 from utils.load_save import load_data, write_data
-from utils.curvature import extract_inflection_points
 
-
-def masked_median_filter(values, mask_flat):
-    """
-    Apply median filter only to values inside the mask.
-    `values` is the flattened neighborhood.
-    `mask_flat` is a flat mask of the same shape as the neighborhood.
-    """
-    masked_values = values[mask_flat > 0]
-    if len(masked_values) > 0:
-        return np.median(masked_values)
-    else:
-        return values[len(values) // 2]  # return center voxel if no masked neighbors
-    
-
-def apply_masked_median_filter(image, mask, size=3):
-    footprint = np.ones((size, size, size), dtype=bool)
-
-    # Precompute flat mask footprint
-    mask_footprint = footprint.flatten()
-
-    # Closure to pass the mask
-    def filter_func(values):
-        if mask_footprint.sum() == 0:
-            return 0
-        return masked_median_filter(values, mask_footprint)
-
-    filtered = generic_filter(image, filter_func, 
-                              footprint=footprint, 
-                              mode='reflect')
-    # Replace only the values inside the mask
-    output = np.copy(image)
-    output[mask > 0] = filtered[mask > 0]
-    return output
 
 
 def find_endpoints(skeleton : np.ndarray) -> np.ndarray:
@@ -627,36 +593,6 @@ def derive_rank_image(img : np.ndarray) -> np.ndarray:
     return rank
 
 
-def obtain_positive_prob_map(endpoint_mask : np.ndarray, rank_mask : np.ndarray, diam_mask : np.ndarray) -> np.ndarray:
-    """
-    Obtain probability for positive points, based on vessel tips,
-    vessel time and vessel diameter
-
-    Params
-    ------
-    endpoint_mask : mask with vessel endpoints
-    rank_mask : mask with ranked times
-    diam_mask : mask with low diameter vessels
-
-    Returns
-    -------
-    prob_map : probability map, used for downweighting false positives
-    
-    """
-    # Obtain distances 
-    dist_endpoint = np.clip(distance_transform_edt(1-endpoint_mask), 0, None)
-    dist_rank = np.clip(distance_transform_edt(1-rank_mask), 0, None)
-    dist_diam = np.clip(distance_transform_edt(1-diam_mask), 0, None)
-
-    # Combine distance maps
-    prob_map = (dist_endpoint + dist_rank + dist_diam)/3
-
-    # Invert to format 0-1
-    # prob_map = 1 - dist/(dist.max() + np.finfo(float).eps)
-
-    return prob_map   
- 
-
 def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm_folder : os.PathLike, dist_folder : os.PathLike, out_folder : os.PathLike, gt_folder : os.PathLike):
     """
     Process case
@@ -691,28 +627,11 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
     assert os.path.exists(segm_file), f"Segmentation file '{segm_file}' does not exist"
     time_image = sitk.ReadImage(segm_file)
     time_map = sitk.GetArrayFromImage(time_image)
-    time_values = time_map[time_map > 0]
-    time_thrs = [np.percentile(time_values, cfg["t_low_percentile"]), 
-                 np.percentile(time_values, cfg["t_high_percentile"])] 
     
     # Smooth time information
     time_smooth, time_cc = smooth_time(time_map=time_map, 
                               size_thr=cfg["size_thr"],
                               median_filter_size=cfg["median_filter_size"])
-
-    
-    # Obtain vessel borders with erosion
-    time_mask = (time_cc > 0)
-    time_mask_eroded = binary_erosion(time_mask, 
-                               iterations=1).astype(np.uint8)
-    border_mask = time_mask.astype(np.uint8)-time_mask_eroded
-
-    # time_labels,_ = label(time_map > 0) 
-    # border_mask_image = sitk.GetImageFromArray(time_labels.astype(np.uint8))
-    #  border_mask_image.CopyInformation(time_image)
-    #  sitk.WriteImage(border_mask_image, f"{cid}_labels.nii.gz")
-    
-
 
     # Load distance map information 
     dist_file = os.path.join(dist_folder, f"{cid}.nii.gz") 
@@ -722,72 +641,39 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
 
     # Determine brain mask: place where distance map is non-maximum 
     brain_coords = np.array(np.where(dist_map < dist_map.max()))
-    brain_centroid = np.median(brain_coords, 1)
-
-    # Convert distance map to segmentation
-    # segm = distance2segm(dist_map=dist_map, 
-    #                      cfg=cfg)  
+    brain_centroid = np.median(brain_coords, 1) 
 
     # Skeletonization
-    skeleton, skeleton_image = skeletonization(segm = time_cc, 
-                                               image_ref = dist_image) 
-    
-    # skeleton_tips= find_endpoints(skeleton=skeleton)
-    # tip_img = compute_tip_image(endpoints=skeleton_tips, shape=skeleton.shape, radius=10)
-    # tip_image = sitk.GetImageFromArray(tip_img)
-    # tip_image.CopyInformation(dist_image)
-    # sitk.WriteImage(tip_image, f"{cid}_tips.nii.gz")
+    skeleton, _ = skeletonization(segm = time_cc, 
+                                    image_ref = dist_image) 
 
     
     # Dilate skeleton and expand it
-    skeleton_old = skeleton.copy()
     if cfg["expand_skeleton"] == 1:
         dilated_skeleton = dilate_skeleton(skeleton = skeleton)
-        skeleton, skeleton_image = skeletonization(segm = dilated_skeleton,
-                                                     image_ref=dist_image)
+        skeleton, _ = skeletonization(segm = dilated_skeleton,
+                                        image_ref=dist_image)
         
     # Obtain diameter of skeleton
     diameter_map = skeleton*dist_map*2
-    # diameter_map_image = sitk.GetImageFromArray(-diameter_map.astype(np.float32))
-    # diameter_map_image.CopyInformation(dist_image)
-    # sitk.WriteImage(diameter_map_image, f"{cid}_diameter.nii.gz")
 
     # Rank time information
     skeleton_time = skeleton*time_smooth # Information on skeleton and time 
     rank = derive_rank_image(img = skeleton_time)
-    # rank_image = sitk.GetImageFromArray(rank)
-    # rank_image.CopyInformation(time_image)
-    # sitk.WriteImage(rank_image, f"{cid}_time_rank.nii.gz")
 
     # Obtain mask with skeleton tips     
     tips = find_endpoints(skeleton=skeleton)
     tip_mask = compute_tip_image(endpoints=tips, 
                                  shape=skeleton.shape, 
                                  radius=cfg["tip_radius"])
-    
-    # Find endpoints in border mask
-    endpoint_mask = tip_mask*border_mask
-    # border_mask_image = sitk.GetImageFromArray(endpoint_mask.astype(np.uint8))
-    # border_mask_image.CopyInformation(time_image)
-    # sitk.WriteImage(border_mask_image, f"{cid}_endpoint_border_mask.nii.gz")
-
-    # Obtain mask with required time values
-    # rank_mask = np.zeros(rank.shape, dtype=np.uint8)
-    # rank_mask[(rank >= cfg["t_low_percentile"] ) & (rank <= cfg["t_high_percentile"])] = 1 
-    # rank_image = sitk.GetImageFromArray(rank_mask)
-    # rank_image.CopyInformation(rank_image)
-    # sitk.WriteImage(rank_image, f"{cid}_rank_mask.nii.gz")
 
     # Obtain mask with low diameter values
     # Minimum diameter found in foreground
     diameter_map = -diameter_map 
     minimum_diam = np.percentile(diameter_map[diameter_map > 0], 
                                   cfg["perc_min_diameter"] )
-    # minimum_diam = diameter_map[diameter_map > 0].min() 
     low_diam_img = ((diameter_map > 0) & (diameter_map <= minimum_diam)).astype(np.uint8)
-    # low_diam_image = sitk.GetImageFromArray(low_diam_img)
     
-        
     keep_box = [] 
 
     # Obtain TP mask for comparison with TP info
@@ -806,7 +692,6 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
     # Iterate through each box 
     tp_info, no_tip, no_lowdiam, no_rank = [],[],[],[]     
     scores_removed = [] 
-    box_info = [] 
     for box, score, l in zip(boxes, scores, labels):
         # Derive patch of interest 
         coords = derive_patch_coords(box=box,
@@ -815,21 +700,12 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
         center = np.array([coords[0] + coords[2],
                            coords[1] + coords[3],
                            coords[-2] + coords[-1]])//2
-        patch = skeleton[coords[0] : coords[2],
-                         coords[1] : coords[3],
-                         coords[-2] : coords[-1]] 
         patch_tip = tip_mask[coords[0] : coords[2],
                           coords[1] : coords[3],
                             coords[-2] : coords[-1]] 
         patch_diam = low_diam_img[coords[0] : coords[2],
                           coords[1] : coords[3],
                             coords[-2] : coords[-1]]
-        patch_diam_map = diameter_map[coords[0] : coords[2],
-                          coords[1] : coords[3],
-                            coords[-2] : coords[-1]]
-        # patch_rank = rank_mask[coords[0] : coords[2],
-        #                     coords[1] : coords[3],
-        #                         coords[-2] : coords[-1]] 
         patch_tp = tp_mask[coords[0] : coords[2],
                           coords[1] : coords[3],
                             coords[-2] : coords[-1]]
@@ -838,20 +714,12 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
                             coords[-2] : coords[-1]] 
         
         time_vals = time_patch[time_patch > 0]
-        min_time, median_time, max_time, low_diam = 0.0, 0.0, 0.0, 0.0 
+        max_time = 0.0
         if time_vals.shape[0] > 0:
             # Get rank values 
-            median_time = np.median(time_vals) 
-            min_time = np.percentile(time_vals, 5)
             max_time = np.percentile(time_vals, 95)
-        
-        if patch_diam.sum() > 0:
-            low_diam = patch_diam_map[patch_diam_map > 0].min() 
-        
-        # time_condition = (median_time > cfg["t_low_percentile"]) & (median_time < cfg["t_high_percentile"])
+
         time_condition = max_time > cfg["t_low_percentile"] 
-        
-        # keep = (patch_tip.sum() > 0).any() & (patch_diam.sum() > 0).any() & (patch_rank.sum() > 0).any()
         keep = (patch_tip.sum() > 0).any() & (patch_diam.sum() > 0).any() & time_condition
         
         # Determine causes for the removal of a positive
@@ -882,18 +750,6 @@ def process_case(file : os.PathLike, cfg : dict, pred_folder : os.PathLike, segm
 
         if not(keep):
             scores_removed.append(score)
-
-        # keep = False
-        # if patch_tip.sum() > 0:
-        #     keep = True
-
-        # if patch.sum() == 0:
-        #      keep = False
-        
-        # keep = keep_patch(patch = patch, 
-        #                    cfg=cfg, 
-        #                     time_patch=time_patch, 
-        #                    time_thrs = time_thrs)
         
         keep_box.append(keep)
 
