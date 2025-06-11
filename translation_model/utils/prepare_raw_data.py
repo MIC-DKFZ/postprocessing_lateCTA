@@ -37,12 +37,20 @@ def main(args):
     cta_folder = args.c
     dist_folder = args.d
     time_folder = args.t
+    brain_folder = args.b
     out_folder = args.o
 
     assert os.path.exists(cta_folder), f"CTA folder '{cta_folder}' does not exist"
     assert os.path.exists(dist_folder), f"Distance folder '{dist_folder}' does not exist"
     assert os.path.exists(time_folder), f"Time folder '{time_folder}' does not exist"
     assert os.path.exists(os.path.dirname(out_folder)), f"Parent output folder '{os.path.dirname(out_folder)}' does not exist"
+
+    if brain_folder is not None:
+        assert os.path.exists(brain_folder), f"Brain folder '{brain_folder}' does not exist"
+        # Create output brain folder
+        brain_out_folder = os.path.join(out_folder, "raw_splitted", "brainTr")
+        if not(os.path.exists(brain_out_folder)):
+            os.makedirs(brain_out_folder) 
 
     # Obtain CIDs
     cta_cids = np.array([f.replace(".nii.gz", "") for f in sorted(os.listdir(cta_folder))], dtype=str) 
@@ -68,7 +76,11 @@ def main(args):
         # CTA file
         cta_file = os.path.join(cta_folder, f"{i}.nii.gz")
 
+        # Brain file
+        brain_file = os.path.join(brain_folder, f"{i}_brain.nii.gz") if brain_folder is not None else None
+
         # Identify inferior and superior rows where to apply trimming for distance map
+        # Avoid having distance information in slices where there is no CTA information 
         cta_image = sitk.ReadImage(cta_file)
         cta_img = sitk.GetArrayFromImage(cta_image)
         cta_img[cta_img == -1024] = 0
@@ -86,27 +98,37 @@ def main(args):
 
         # Distance file: trim it with CTA information
         out_dist_file = os.path.join(label_folder, f"{i}_dist.nii.gz")
-        dist_file = os.path.join(dist_folder, f"{i}.nii.gz") 
-        dist_image = sitk.ReadImage(dist_file)
-        dist_img = sitk.GetArrayFromImage(dist_image)
-        dist_img[:low_lim] = dist_img.max()
-        dist_img[high_lim:] = dist_img.min()
-        dist_image_trim = sitk.GetImageFromArray(dist_img)
-        dist_image_trim.CopyInformation(dist_image)
-        sitk.WriteImage(dist_image_trim, out_dist_file)  
+        if not(os.path.exists(out_dist_file)):
+            dist_file = os.path.join(dist_folder, f"{i}.nii.gz") 
+            dist_image = sitk.ReadImage(dist_file)
+            dist_img = sitk.GetArrayFromImage(dist_image)
+            dist_img[:low_lim] = dist_img.max()
+            dist_img[high_lim:] = dist_img.min()
+            dist_image_trim = sitk.GetImageFromArray(dist_img)
+            dist_image_trim.CopyInformation(dist_image)
+            sitk.WriteImage(dist_image_trim, out_dist_file)  
 
         # Copy CTA file 
-        out_cta_file = os.path.join(train_folder, f"{i}.nii.gz")   
-        shutil.copyfile(cta_file, out_cta_file)
+        out_cta_file = os.path.join(train_folder, f"{i}.nii.gz")  
+        if not(os.path.exists(out_cta_file)): 
+            shutil.copyfile(cta_file, out_cta_file)
+
+        # Copy brain file, if it exists
+        if (brain_file is not None):
+            if os.path.exists(brain_file):
+                out_brain_file = os.path.join(brain_out_folder, f"{i}.nii.gz")
+                if not(os.path.exists(out_brain_file)):
+                    shutil.copyfile(brain_file, out_brain_file)
 
         # Convert time image into rank image
         out_time_file = os.path.join(label_folder, f"{i}_time.nii.gz")
-        time_image = sitk.ReadImage(time_file)
-        time_img = sitk.GetArrayFromImage(time_image) 
-        rank_img = time2rank(time_img=time_img)
-        rank_image = sitk.GetImageFromArray(rank_img.astype(np.float32))
-        rank_image.CopyInformation(time_image)
-        sitk.WriteImage(rank_image, out_time_file)
+        if not(os.path.exists(out_time_file)):
+            time_image = sitk.ReadImage(time_file)
+            time_img = sitk.GetArrayFromImage(time_image) 
+            rank_img = time2rank(time_img=time_img)
+            rank_image = sitk.GetImageFromArray(rank_img.astype(np.float32))
+            rank_image.CopyInformation(time_image)
+            sitk.WriteImage(rank_image, out_time_file)
 
 
 def get_args():
@@ -115,6 +137,7 @@ def get_args():
     parser.add_argument("--c", help="CTA folder", required=True, type=str)
     parser.add_argument("--t", help="Time map folder", required=True, type=str)
     parser.add_argument("--d", help="Distance map folder", required=True, type=str)
+    parser.add_argument("--b", help="Brain segmentation folder", default=None, type=str)
     parser.add_argument("--o", help="Output folder", required=True, type=str)
     args = parser.parse_args()
 
