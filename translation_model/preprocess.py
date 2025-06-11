@@ -29,6 +29,46 @@ from monai.data import Dataset, DataLoader
 from monai.transforms import MapTransform
 
 
+def build_data(folder : os.PathLike) -> list:
+    """
+    Derive dataframe with case IDs and corresponding 
+    filenames
+
+    Params
+    ------
+    folder : input folder
+
+    Returns
+    -------
+    df : list with filename information
+    
+    """
+    # Inspect raw folder
+    cta_folder = os.path.join(folder, "imagesTr")
+    label_folder = os.path.join(folder, "labelsTr")
+    brain_folder = os.path.join(folder, "brainTr")
+
+    # Build output list of dictionaries for each case of interest
+    df = [] 
+    cta_files = sorted(os.listdir(cta_folder))
+    for cta_file in cta_files:
+        if ".nii.gz" in cta_file:
+            cid = cta_file.replace(".nii.gz", "")
+            cta_file = os.path.join(cta_folder, cta_file)
+            time_file = os.path.join(label_folder, 
+                                     f"{cid}_time.nii.gz") 
+            dist_file = os.path.join(label_folder, 
+                                     f"{cid}_dist.nii.gz") 
+            brain_file = os.path.join(brain_folder, 
+                                     f"{cid}.nii.gz") 
+            cid_dict = {"cid" : cid,
+                        "cta" : cta_file,
+                        "dist" : dist_file,
+                        "time" : time_file,
+                        "brain" : brain_file} 
+            df.append(cid_dict)
+
+    return df
 
 
 def center_image_on_mask(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -177,10 +217,8 @@ class SaveAsBlosc2d(MapTransform):
 
 def compute_median_spacing_globalvals(
    data_list: list,
-   key_image: str = "image",
-   key_mask: str = "mask",
-   margin: int = 2,
-) -> Union[tuple, float, float]:
+   keys : list,
+) -> Union[tuple, dict, dict]:
    """
    Obtain median spacing, global mean and global std
    (focusing on the brain only) from dataset
@@ -188,11 +226,8 @@ def compute_median_spacing_globalvals(
 
    Params
    ------
-   data_list : filename and labels for dataset
-   downsample : downsampling factor
-   key_image : MONAI key for image (image filename)
-   key_mask : MONAI key for mask (mask filename)
-   margin : margin for image cropping
+   data_list : filenames for dataset
+   keys : keys of interest to be loaded
 
 
    Returns
@@ -203,69 +238,63 @@ def compute_median_spacing_globalvals(
 
 
    """
-   loader = LoadImaged(keys=[key_image, key_mask], meta_keys=["image", "mask"])
+   loader = LoadImaged(keys=keys, image_only=False)
+
    spacings = []
 
+   # Derive keys to analyze: all but brain keys
+   ind_brain = keys.index("brain")
+   keys_analyze = keys[:ind_brain] + keys[(ind_brain+1):]  
 
    # elements for global mean and standard deviation computation
-   n_voxels = 0
-   total_sum = 0.0
-   total_sq_sum = 0.0
+   n_voxels, total_sum, total_sq_sum, global_mean, global_std = {}, {}, {}, {}, {}
+   for key in keys_analyze: # Initialization 
+       n_voxels[key], total_sum[key], total_sq_sum[key] = 0, 0.0, 0.0
+
+   
+   # Iterate through case IDs
+   spacings = [] # Store spacings
    for item in data_list:
        loaded = loader(item)
        logger.info(f"Planning {loaded['cid']}")
-       spacing = np.flip(np.array(loaded[key_image].meta["pixdim"][1:4]))  # (Z, Y, X)
-       img, mask = np.swapaxes(loaded[key_image].numpy(), 0, -1), np.swapaxes(
-           loaded[key_mask].numpy(), 0, -1
-       )
 
+       # Load brain mask
+       mask =  np.swapaxes(loaded["brain"], 0, -1)
 
-       # 🧠 Perform brain mask-based cropping
-       z_nonzero = np.any(mask > 0, axis=(1, 2))
+       # Determine brain limits
+       lims = extract_brain_limits(brain_seg=mask,
+                                    dist_map=np.swapaxes(loaded["dist"], 0, -1))
+       
+       # Derive spacing 
+       spacing = np.flip(np.array(loaded[f"{keys[0]}_meta_dict"]["pixdim"][1:4]))  # (Z, Y, X)
+       spacings.append(spacing) 
+       
+       # Iterate through keys of the same case ID, accumulate values 
+       # for global mean and global std computation for normalization
+       for key in keys_analyze:
+           img = np.swapaxes(loaded[key], 0, -1)
+           # Restrict image and brain mask to previously derived limits
+           trimmed_img = img[lims[0]:(lims[1]+1)] 
+           trimmed_mask = mask[lims[0]:(lims[1]+1)] 
+           n_voxels[key] += (trimmed_mask > 0).sum() 
+           total_sum[key] += trimmed_img[trimmed_mask > 0].sum()
+           total_sq_sum[key] += (trimmed_img[trimmed_mask > 0]**2).sum()  
 
-
-       # Mask out with brain
-       inv_mask = (1 - mask).astype(bool)
-       img[inv_mask] = -1024
-       mask = mask.astype(bool)
-
-
-       if mask.sum() > 0:
-           # Restrict image to axial slices where brain mask is present, with a margin of two slices
-           z_min, z_max = np.where(z_nonzero)[0][[0, -1]]
-           z_min = max(0, z_min - margin)
-           z_max = min(mask.shape[0] - 1, z_max + margin)
-           img = img[z_min : z_max + 1]
-           mask = mask[z_min : z_max + 1]
-
-
-       # Update parameters for image size
-       # n_voxels += img.size
-       # total_sum += img.sum()
-       # total_sq_sum += (img**2).sum()
-       # Compute HU stats only on brain voxels
-       n_voxels += mask.sum()
-       total_sum += img[mask].sum()
-       total_sq_sum += (img[mask] ** 2).sum()
-       print(
-           img.sum() / img.size,
-           img.std(),
-           img[mask].sum() / mask.sum(),
-           img[mask].std(),
-       )
-
-
-       spacings.append(spacing)
-
+           print(trimmed_img[trimmed_mask > 0].mean(),
+                 trimmed_img[trimmed_mask > 0].std(),
+                 spacing,
+                 trimmed_img.shape,
+                 trimmed_mask.shape) 
 
    # Median spacing derivation
    spacings_np = np.array(spacings).astype(float)
-   median_spacing = np.median(spacings_np, axis=0)
+   median_spacing = np.median(spacings_np, axis=0).astype(float)
 
 
    # Global mean and standard deviation derivation
-   global_mean = total_sum / n_voxels
-   global_std = np.sqrt(total_sq_sum / n_voxels - global_mean**2)
+   for key in keys_analyze:
+       global_mean[key]  = float(total_sum[key] / (n_voxels[key] + np.finfo(float).eps))
+       global_std[key]  = float(np.sqrt(total_sq_sum[key] / (n_voxels[key]  + np.finfo(float).eps) - global_mean[key]**2))
 
 
    return tuple(median_spacing), global_mean, global_std
@@ -329,57 +358,6 @@ def get_preprocessing_transforms(
 
 
 
-
-def load_dataset(
-   csv_path: os.PathLike, brain_path: os.PathLike, key: str = "Tr"
-) -> list:
-   """
-   Load dataset from CSV label file
-
-
-   Params
-   ------
-   csv_path : CSV file
-   brain_path : brain segmentation file path
-   key : key for dataset ("Tr" for training, "Ts" for testing)
-
-
-   Returns
-   -------
-   data : output paths and labels
-
-
-   """
-   df = pd.read_csv(csv_path)
-   data = []
-   for i in range(df.shape[0]):
-       img_file = os.path.join(
-           os.getenv("data_folder"),
-           "raw_splitted",
-           f"images{key}",
-           f"{str(df.iloc[i,0])}_0000.nii.gz",
-       )
-       brain_file = os.path.join(brain_path, f"{str(df.iloc[i,0])}.nii.gz")
-       if os.path.exists(img_file) and os.path.exists(brain_file):
-           d = {
-               "image": os.path.join(
-                   os.getenv("data_folder"),
-                   "raw_splitted",
-                   f"images{key}",
-                   f"{str(df.iloc[i,0])}_0000.nii.gz",
-               ),
-               "cid": str(df.iloc[i, 0]),
-               "mask": os.path.join(brain_path, f"{str(df.iloc[i,0])}.nii.gz"),
-               "label": int(df.iloc[i, 1]),
-           }
-           data.append(d)
-
-
-   return data
-
-
-
-
 def skip_processed(data: list, preprocessed: os.PathLike, key: str = "Tr") -> list:
    """
    Skip file if already processed
@@ -434,6 +412,38 @@ def apply_window(image: np.ndarray, window_center: float, window_width: float):
    return windowed
 
 
+def extract_brain_limits(brain_seg : np.ndarray, dist_map : np.ndarray) -> list:
+    """
+    Locate first and last axial slices where the brain spans
+    and there is distance information, since the 
+    preprocessing will only focus on those slices
+
+    Params
+    ------
+    brain_seg : input brain segmentation
+    dist_map : distance map
+
+    Returns
+    -------
+    lims : brain limits
+    
+    """
+    # Locate limits in brain segmentation
+    brain_axial_coords = np.where(brain_seg > 0)[0]
+    brain_lims = [brain_axial_coords.min(), 
+                  brain_axial_coords.max()] 
+    
+    # Locate limits in distance maps
+    distance_axial_coords = np.where(dist_map < dist_map.max())[0] 
+    dist_lims = [distance_axial_coords.min(),
+                 distance_axial_coords.max()]
+
+    # Combine limit definitions
+    lims = [max(brain_lims[0] , dist_lims[0]),
+            min(brain_lims[-1] , dist_lims[-1])] 
+
+    return lims   
+
 
 
 def preprocess_dataset():
@@ -446,11 +456,11 @@ def preprocess_dataset():
    ), f"Configuration file '{cfg_file}' does not exist or is not .json"
    cfg = load_json(cfg_file)
    cfg_keys = list(cfg.keys())
-   required_keys = ["patch_size", "workers", "brain_path", "downsample"]
+   #required_keys = ["patch_size", "workers", "downsample"]
 
-   for k in required_keys:
+   #for k in required_keys:
        # Check that all required keys are present
-       assert k in cfg_keys, f"'{k}' not in configuration"  
+       #assert k in cfg_keys, f"'{k}' not in configuration"  
 
 
    # Determine folders
@@ -473,44 +483,51 @@ def preprocess_dataset():
    log_file = os.path.join(preprocessed, "preprocessing.log")
    logger.add(log_file, level="INFO")
 
-
-   # Set up label file
-   csv_path = os.path.join(raw_splitted, "labelsTr.csv")
-   data = load_dataset(csv_path, brain_path=cfg["brain_path"])
-
-
    # Set up plan file, and load plan if it already exists
    plan_file = os.path.join(preprocessed, "plan.json")
    plan = {}
+   keys_analysis = ["cta", "time", "dist"]
    if os.path.exists(plan_file):
        # Load precomputed values from previous runs
        plan = load_json(plan_file)
        median_spacing = plan["spacing"]
-       global_mean = plan["mean"]
-       global_std = plan["std"]
+       global_mean, global_std = {}, {}
+       for keys in keys_analysis:
+          global_mean[keys]  = plan[f"stats_{keys}"]["mean"]
+          global_std[keys]  = plan[f"stats_{keys}"]["std"]
 
+   # Data preparation
+   logger.info("Preparing data...")
+   data = build_data(folder=raw_splitted)
 
    # Planning
    logger.info(
        "🔍 Computing median spacing, global mean, and global std from training data..."
-   )
-   if not (os.path.exists(plan_file)):
-       median_spacing, global_mean, global_std = compute_median_spacing_globalvals(
-           data
-       )
-       plan["spacing"] = list(median_spacing)
-       plan["mean"], plan["std"] = float(global_mean), float(global_std)
+   )  
 
+   if not (os.path.exists(plan_file)):
+       keys = ["cta", "brain", "time", "dist"] 
+       median_spacing, global_mean, global_std = compute_median_spacing_globalvals(data_list = data,
+                                                                                   keys = keys)
+       
+       # Store planning information
+       plan["spacing"] = list(median_spacing)
+       
+       keys_analysis = list(global_mean.keys())
+       for key in keys_analysis:
+          stats_key = {}
+          stats_key["mean"], stats_key["std"] = global_mean[key], global_std[key]    
+          plan[f"stats_{key}"] = stats_key
 
        # Save plan file
-       print(plan["spacing"], plan["mean"], plan["std"])
        save_json(data=plan, path=plan_file)
 
 
    logger.info(f"✅ Median spacing (Z, Y, X): {median_spacing}")
-   logger.info(f"✅ Global mean, global std: {global_mean}, {global_std}")
+   for keys in keys_analysis:
+      logger.info(f"✅ Global mean, global std: {global_mean[keys]}, {global_std[keys]}")
 
-
+   sys.exit()
    transforms = get_preprocessing_transforms(
        patch_size=cfg["patch_size"],
        downsample=cfg["downsample"],
