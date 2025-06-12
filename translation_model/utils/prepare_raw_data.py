@@ -40,6 +40,7 @@ def main(args):
     brain_folder = args.b
     out_folder = args.o
     split = args.s
+    task_folder = args.task
 
     assert os.path.exists(cta_folder), f"CTA folder '{cta_folder}' does not exist"
     assert os.path.exists(dist_folder), f"Distance folder '{dist_folder}' does not exist"
@@ -64,10 +65,10 @@ def main(args):
     common_cids = np.intersect1d(common_cids, time_cids)
 
     # Set up output folders
-    train_folder = os.path.join(out_folder, "raw_splitted", "imagesTr") 
-    label_folder = os.path.join(out_folder, "raw_splitted", "labelsTr") 
-    test_folder = os.path.join(out_folder, "raw_splitted", "imagesTs") 
-    label_test_folder = os.path.join(out_folder, "raw_splitted", "labelsTs") 
+    train_folder = os.path.join(out_folder, "raw_splitted", task_folder, "imagesTr") 
+    label_folder = os.path.join(out_folder, "raw_splitted", task_folder, "labelsTr") 
+    test_folder = os.path.join(out_folder, "raw_splitted", task_folder, "imagesTs") 
+    label_test_folder = os.path.join(out_folder, "raw_splitted", task_folder, "labelsTs") 
 
     if not(os.path.exists(train_folder)):
         os.makedirs(train_folder)
@@ -169,6 +170,7 @@ def get_args():
     parser.add_argument("--b", help="Brain segmentation folder", default=None, type=str)
     parser.add_argument("--o", help="Output folder", required=True, type=str)
     parser.add_argument("--s", help="Train-test split ratio", default=0.2, type=float)
+    parser.add_argument("--task", help="Task folder", required=True, type=str)
     args = parser.parse_args()
 
     return args

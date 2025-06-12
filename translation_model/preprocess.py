@@ -32,7 +32,7 @@ sys.path.append(os.path.dirname(script_dir))
 from utils.load_save import write_data, load_data
 
 
-def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, key : str ="Tr") -> dict:
+def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, task_id : str, key : str ="Tr") -> dict:
     """
     Prepare dataset for preprocessing and apply cropping in parallel
 
@@ -40,6 +40,7 @@ def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, key :
     ------
     folder : folder with raw data
     cta_file : CTA file of interest
+    task_id : task folder
     key : whether to build data and crop for the training set ("Tr") or for the test set ("Ts")
 
     Returns
@@ -54,10 +55,10 @@ def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, key :
     brain_folder = os.path.join(folder, f"brain{key}")
 
     # Provide cropped folder
-    crop_folder = os.path.join(os.path.dirname(folder), "raw_cropped")
-    cta_crop_folder = os.path.join(crop_folder, f"images{key}")
-    label_crop_folder = os.path.join(crop_folder, f"labels{key}") 
-    brain_crop_folder = os.path.join(crop_folder, f"brain{key}") 
+    crop_folder = os.path.join(os.path.dirname(os.path.dirname(folder)), "raw_cropped")
+    cta_crop_folder = os.path.join(crop_folder, task_id, f"images{key}")
+    label_crop_folder = os.path.join(crop_folder, task_id, f"labels{key}") 
+    brain_crop_folder = os.path.join(crop_folder, task_id, f"brain{key}") 
 
     if ".nii.gz" in cta_file:
         # Fill in data information
@@ -98,6 +99,9 @@ def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, key :
 
             brain_image = sitk.ReadImage(brain_file)
             brain_img = sitk.GetArrayFromImage(brain_image)
+
+            print(cta_crop_file, time_crop_file, dist_crop_file, brain_crop_file)
+            sys.exit()
 
             lims = extract_brain_limits(brain_seg=brain_img,
                                         cta = cta_img)
@@ -178,6 +182,8 @@ def create_datalist(folder : os.PathLike) -> dict:
     
     return datalist
 
+
+
 def create_configyaml(task_id : str):
     """
     Create config.yaml file for derivation of patch size and 
@@ -190,12 +196,12 @@ def create_configyaml(task_id : str):
     """
     config = {"name" : task_id,
               "modality" : "CT",
-              "dataroot" : os.getenv("data_folder"),
-              "datalist" : os.path.join(os.getenv("data_folder"),"preprocessed","datalist.json"),
-              "nnunet_raw" : os.path.join(os.getenv("data_folder"),"raw_cropped"),
-              "nnunet_preprocessed" : os.path.join(os.getenv("data_folder"),"preprocessed"),
+              "dataroot" : os.path.join(os.getenv("data_folder")),
+              "datalist" : os.path.join(os.getenv("data_folder"), "preprocessed", task_id, "datalist.json"),
+              "nnunet_raw" : os.path.join(os.getenv("data_folder"), "raw_cropped"),
+              "nnunet_preprocessed" : os.path.join(os.getenv("data_folder"), "preprocessed"),
               "nnunet_results" : os.path.join(os.getenv("model_folder")),
-              "dataset_name_or_id" : int(task_id[(-3):]),
+              #"dataset_name_or_id" : int(task_id[(-3):]),
               "preprocessing": {
                     "planner": {
                         "device": "cuda",  # or "cpu"
@@ -207,7 +213,7 @@ def create_configyaml(task_id : str):
     
     return config
 
-def build_data_crop(folder : os.PathLike, workers : int = 6, key : str = "Tr") -> list:
+def build_data_crop(folder : os.PathLike, task_id : str, workers : int = 6, key : str = "Tr") -> list:
     """
     Derive dataframe with case IDs and corresponding 
     filenames
@@ -217,6 +223,7 @@ def build_data_crop(folder : os.PathLike, workers : int = 6, key : str = "Tr") -
     Params
     ------
     folder : input folder
+    task_id : task folder
     workers : parallel workers (default: 6)
     key : whether to build data and crop for the training set ("Tr") or for the test set ("Ts")
 
@@ -231,7 +238,7 @@ def build_data_crop(folder : os.PathLike, workers : int = 6, key : str = "Tr") -
     brain_folder = os.path.join(folder, f"brain{key}")
 
     # Provide cropped folder
-    crop_folder = os.path.join(os.path.dirname(folder), "raw_cropped")
+    crop_folder = os.path.join(os.path.dirname(folder), "raw_cropped", task_id)
     cta_crop_folder = os.path.join(crop_folder, f"images{key}")
     label_crop_folder = os.path.join(crop_folder, f"labels{key}") 
     brain_crop_folder = os.path.join(crop_folder, f"brain{key}") 
@@ -245,7 +252,7 @@ def build_data_crop(folder : os.PathLike, workers : int = 6, key : str = "Tr") -
     # Build output list of dictionaries for each case of interest
     df = [] 
     cta_files = sorted(os.listdir(cta_folder))
-    df = Parallel(n_jobs=workers)(delayed(build_data_crop_parallel)(folder, cta_file, key) for cta_file in cta_files)
+    df = Parallel(n_jobs=workers)(delayed(build_data_crop_parallel)(folder, cta_file, task_id, key) for cta_file in cta_files)
         
     return df
 
@@ -678,9 +685,12 @@ def preprocess_dataset(args):
 
 
    # Determine folders
-   raw_splitted = os.path.join(os.getenv("data_folder"), "raw_splitted")
-   raw_cropped = os.path.join(os.getenv("data_folder"), "raw_cropped")
-   preprocessed = os.path.join(os.getenv("data_folder"), "preprocessed")
+   raw_splitted = os.path.join(os.getenv("data_folder"), 
+                               "raw_splitted", task_id)
+   raw_cropped = os.path.join(os.getenv("data_folder"), 
+                              "raw_cropped", task_id)
+   preprocessed = os.path.join(os.getenv("data_folder"), 
+                               "preprocessed", task_id)
 
 
    if not (os.path.exists(preprocessed)):
@@ -720,17 +730,18 @@ def preprocess_dataset(args):
       write_data(data=datalist, filename=datalist_file)
 
    # Create config.yaml
-   if not(os.path.exists(configyaml)):
-    config = create_configyaml(task_id = task_id)
+   config = create_configyaml(task_id = task_id)
    
    # Data preparation
    logger.info("Preparing data and cropping...")
    data = build_data_crop(folder=raw_splitted, 
+                          task_id=task_id,
                           workers=cfg["workers"], 
                           key="Tr")
    data_test = build_data_crop(folder=raw_splitted, 
-                          workers=cfg["workers"], 
-                          key="Ts")
+                               task_id=task_id,
+                                workers=cfg["workers"], 
+                                key="Ts")
 
    # Planning
    logger.info(
