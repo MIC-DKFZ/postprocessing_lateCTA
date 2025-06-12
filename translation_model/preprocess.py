@@ -8,14 +8,13 @@ import blosc2
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
+from joblib import Parallel, delayed
 from scipy.ndimage import center_of_mass, shift
 import argparse
 import time
 
-
-from nndet.io import load_json, save_json
-
-
+from monai.bundle import ConfigParser
+from monai.apps.nnunet import nnUNetV2Runner
 from monai.transforms import (
    Compose,
    LoadImaged,
@@ -28,15 +27,198 @@ from monai.transforms import (
 from monai.data import Dataset, DataLoader
 from monai.transforms import MapTransform
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.dirname(script_dir))
+from utils.load_save import write_data, load_data
 
-def build_data(folder : os.PathLike) -> list:
+
+def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, key : str ="Tr") -> dict:
+    """
+    Prepare dataset for preprocessing and apply cropping in parallel
+
+    Params
+    ------
+    folder : folder with raw data
+    cta_file : CTA file of interest
+    key : whether to build data and crop for the training set ("Tr") or for the test set ("Ts")
+
+    Returns
+    -------
+    cid_dict : relevant information for case ID of interest
+    
+    """
+
+    # Inspect raw folder
+    cta_folder = os.path.join(folder, f"images{key}")
+    label_folder = os.path.join(folder, f"labels{key}")
+    brain_folder = os.path.join(folder, f"brain{key}")
+
+    # Provide cropped folder
+    crop_folder = os.path.join(os.path.dirname(folder), "raw_cropped")
+    cta_crop_folder = os.path.join(crop_folder, f"images{key}")
+    label_crop_folder = os.path.join(crop_folder, f"labels{key}") 
+    brain_crop_folder = os.path.join(crop_folder, f"brain{key}") 
+
+    if ".nii.gz" in cta_file:
+        # Fill in data information
+        cid = cta_file.replace(".nii.gz", "") 
+
+        cta_crop_file = os.path.join(cta_crop_folder, cta_file)
+        time_crop_file = os.path.join(label_crop_folder, 
+                                    f"{cid}_time.nii.gz") 
+        dist_crop_file = os.path.join(label_crop_folder, 
+                                    f"{cid}_dist.nii.gz") 
+        brain_crop_file = os.path.join(brain_crop_folder, 
+                                    f"{cid}.nii.gz") 
+        
+        cid_dict = {"cid" : cid,
+                    "cta" : cta_crop_file,
+                    "dist" : dist_crop_file,
+                    "time" : time_crop_file,
+                    "brain" : brain_crop_file} 
+
+        # Crop data
+        if not(os.path.exists(cta_crop_file)) or not(os.path.exists(dist_crop_file)) or not(os.path.exists(brain_crop_file)):
+            cta_file = os.path.join(cta_folder, cta_file)
+            time_file = os.path.join(label_folder, 
+                                    f"{cid}_time.nii.gz") 
+            dist_file = os.path.join(label_folder, 
+                                    f"{cid}_dist.nii.gz") 
+            brain_file = os.path.join(brain_folder, 
+                                    f"{cid}.nii.gz")
+        
+            cta_image = sitk.ReadImage(cta_file)
+            cta_img = sitk.GetArrayFromImage(cta_image)
+            
+            time_image = sitk.ReadImage(time_file)
+            time_img = sitk.GetArrayFromImage(time_image)
+
+            dist_image = sitk.ReadImage(dist_file)
+            dist_img = sitk.GetArrayFromImage(dist_image)
+
+            brain_image = sitk.ReadImage(brain_file)
+            brain_img = sitk.GetArrayFromImage(brain_image)
+
+            lims = extract_brain_limits(brain_seg=brain_img,
+                                        cta = cta_img)
+            
+            imgs = [cta_img, time_img, 
+                    dist_img, brain_img]
+            outfiles = [cta_crop_file, time_crop_file, 
+                        dist_crop_file, brain_crop_file] 
+            
+            print(f"Cropping {cid}...")
+            for img, outfile in zip(imgs, outfiles):
+                cropping(img = img, lims = lims, 
+                            image=time_image, outfile=outfile)
+                    
+    return cid_dict
+
+
+def create_datalist(folder : os.PathLike) -> dict:
+    """
+    Create data list for MONAI patch size and architecture estimation
+
+    Params
+    ------
+    folder : input data folder
+
+    Returns
+    -------
+    datalist : resulting data list object
+    
+    """
+
+    # Determine training data
+    train_folder = os.path.join(folder, "imagesTr")
+    train_label_folder = os.path.join(folder, "labelsTr")
+    train_files = sorted(os.listdir(train_folder))
+
+    assert os.path.exists(train_folder) and os.path.exists(train_label_folder), f"Train folder '{train_folder}' or train label folder '{train_label_folder}' do not exist"
+
+    # Determine testing data
+    test_folder = os.path.join(folder, "imagesTs")
+    test_label_folder = os.path.join(folder, "labelsTs")
+
+    # Save training information
+    train_info = []
+    for f in train_files:
+        if ".nii.gz" in f:
+            cid = f.replace(".nii.gz", "")
+            full_file = os.path.join(train_folder, f)
+            label_file = os.path.join(train_label_folder, f"{cid}_time.nii.gz")
+
+            assert os.path.exists(full_file) and os.path.exists(label_file), f"CTA file '{full_file}' or label file '{label_file}' do not exist"
+
+            d = {"image" : [full_file],
+                 "label" : label_file}  
+            train_info.append(d)
+
+
+    # Save testing information
+    test_info = []
+    if os.path.exists(test_folder):
+        test_files = sorted(os.listdir(test_folder))
+        for f in test_files:
+            if ".nii.gz" in f:
+                cid = f.replace(".nii.gz", "")
+                full_file = os.path.join(test_folder, f)
+                label_file = os.path.join(test_label_folder, f"{cid}_time.nii.gz")
+
+                assert os.path.exists(full_file) and os.path.exists(label_file), f"CTA file '{full_file}' or label file '{label_file}' do not exist"
+
+                d = {"image" : [full_file],
+                    "label" : label_file}  
+                test_info.append(d)
+
+    # Provide final datalist information
+    datalist = {"training" : train_info,
+                "validation" : [],
+                "test" : test_info}
+    
+    return datalist
+
+def create_configyaml(task_id : str):
+    """
+    Create config.yaml file for derivation of patch size and 
+    architecture parameters
+
+    Params
+    ------
+    task_id : task ID
+    
+    """
+    config = {"name" : task_id,
+              "modality" : "CT",
+              "dataroot" : os.getenv("data_folder"),
+              "datalist" : os.path.join(os.getenv("data_folder"),"preprocessed","datalist.json"),
+              "nnunet_raw" : os.path.join(os.getenv("data_folder"),"raw_cropped"),
+              "nnunet_preprocessed" : os.path.join(os.getenv("data_folder"),"preprocessed"),
+              "nnunet_results" : os.path.join(os.getenv("model_folder")),
+              "dataset_name_or_id" : int(task_id[(-3):]),
+              "preprocessing": {
+                    "planner": {
+                        "device": "cuda",  # or "cpu"
+                        "allowed_memory_mb": 11000,  # limit to 11GB GPU memory
+                        # Optionally add spacing override or more planner fields:
+                        # "target_spacing": [1.0, 1.0, 1.0],
+                    }}
+                }
+    
+    return config
+
+def build_data_crop(folder : os.PathLike, workers : int = 6, key : str = "Tr") -> list:
     """
     Derive dataframe with case IDs and corresponding 
     filenames
+    At the same time, crop the data with the corresponding brain 
+    and distance map information
 
     Params
     ------
     folder : input folder
+    workers : parallel workers (default: 6)
+    key : whether to build data and crop for the training set ("Tr") or for the test set ("Ts")
 
     Returns
     -------
@@ -44,32 +226,53 @@ def build_data(folder : os.PathLike) -> list:
     
     """
     # Inspect raw folder
-    cta_folder = os.path.join(folder, "imagesTr")
-    label_folder = os.path.join(folder, "labelsTr")
-    brain_folder = os.path.join(folder, "brainTr")
+    cta_folder = os.path.join(folder, f"images{key}")
+    label_folder = os.path.join(folder, f"labels{key}")
+    brain_folder = os.path.join(folder, f"brain{key}")
+
+    # Provide cropped folder
+    crop_folder = os.path.join(os.path.dirname(folder), "raw_cropped")
+    cta_crop_folder = os.path.join(crop_folder, f"images{key}")
+    label_crop_folder = os.path.join(crop_folder, f"labels{key}") 
+    brain_crop_folder = os.path.join(crop_folder, f"brain{key}") 
+
+    # Create folder if it does not exist
+    folders = [cta_crop_folder, label_crop_folder, brain_crop_folder]
+    for f in folders: 
+        if not(os.path.exists(f)):
+            os.makedirs(f)
 
     # Build output list of dictionaries for each case of interest
     df = [] 
     cta_files = sorted(os.listdir(cta_folder))
-    for cta_file in cta_files:
-        if ".nii.gz" in cta_file:
-            cid = cta_file.replace(".nii.gz", "")
-            cta_file = os.path.join(cta_folder, cta_file)
-            time_file = os.path.join(label_folder, 
-                                     f"{cid}_time.nii.gz") 
-            dist_file = os.path.join(label_folder, 
-                                     f"{cid}_dist.nii.gz") 
-            brain_file = os.path.join(brain_folder, 
-                                     f"{cid}.nii.gz") 
-            cid_dict = {"cid" : cid,
-                        "cta" : cta_file,
-                        "dist" : dist_file,
-                        "time" : time_file,
-                        "brain" : brain_file} 
-            df.append(cid_dict)
-
+    df = Parallel(n_jobs=workers)(delayed(build_data_crop_parallel)(folder, cta_file, key) for cta_file in cta_files)
+        
     return df
 
+
+def cropping(img : np.ndarray, lims : list, image, outfile : os.PathLike):
+    """
+    Apply image cropping
+
+    Params
+    ------
+    img : input image
+    lims : croppping limits
+    image : sitk reference image
+    outfile : output file
+    
+    Returns
+    -------
+    Saved cropped image in output file
+    
+    """
+    crop_img = img[lims[0]:(lims[1]+1)]
+    crop_image = sitk.GetImageFromArray(crop_img)
+    crop_image.SetOrigin(image.GetOrigin())
+    crop_image.SetSpacing(image.GetSpacing())
+    crop_image.SetDirection(image.GetDirection())
+
+    sitk.WriteImage(crop_image, outfile)
 
 def center_image_on_mask(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
    # Compute the centroid of the mask
@@ -262,8 +465,8 @@ def compute_median_spacing_globalvals(
        mask =  np.swapaxes(loaded["brain"], 0, -1)
 
        # Determine brain limits
-       lims = extract_brain_limits(brain_seg=mask,
-                                    dist_map=np.swapaxes(loaded["dist"], 0, -1))
+       #lims = extract_brain_limits(brain_seg=mask,
+       #                             dist_map=np.swapaxes(loaded["dist"], 0, -1))
        
        # Derive spacing 
        spacing = np.flip(np.array(loaded[f"{keys[0]}_meta_dict"]["pixdim"][1:4]))  # (Z, Y, X)
@@ -274,17 +477,11 @@ def compute_median_spacing_globalvals(
        for key in keys_analyze:
            img = np.swapaxes(loaded[key], 0, -1)
            # Restrict image and brain mask to previously derived limits
-           trimmed_img = img[lims[0]:(lims[1]+1)] 
-           trimmed_mask = mask[lims[0]:(lims[1]+1)] 
-           n_voxels[key] += (trimmed_mask > 0).sum() 
-           total_sum[key] += trimmed_img[trimmed_mask > 0].sum()
-           total_sq_sum[key] += (trimmed_img[trimmed_mask > 0]**2).sum()  
-
-           print(trimmed_img[trimmed_mask > 0].mean(),
-                 trimmed_img[trimmed_mask > 0].std(),
-                 spacing,
-                 trimmed_img.shape,
-                 trimmed_mask.shape) 
+           #trimmed_img = img[lims[0]:(lims[1]+1)] 
+           #trimmed_mask = mask[lims[0]:(lims[1]+1)] 
+           n_voxels[key] += (mask > 0).sum() 
+           total_sum[key] += img[mask > 0].sum()
+           total_sq_sum[key] += (img[mask > 0]**2).sum()  
 
    # Median spacing derivation
    spacings_np = np.array(spacings).astype(float)
@@ -412,7 +609,7 @@ def apply_window(image: np.ndarray, window_center: float, window_width: float):
    return windowed
 
 
-def extract_brain_limits(brain_seg : np.ndarray, dist_map : np.ndarray) -> list:
+def extract_brain_limits(brain_seg : np.ndarray, cta : np.ndarray) -> list:
     """
     Locate first and last axial slices where the brain spans
     and there is distance information, since the 
@@ -421,7 +618,7 @@ def extract_brain_limits(brain_seg : np.ndarray, dist_map : np.ndarray) -> list:
     Params
     ------
     brain_seg : input brain segmentation
-    dist_map : distance map
+    cta : CTA image
 
     Returns
     -------
@@ -434,19 +631,41 @@ def extract_brain_limits(brain_seg : np.ndarray, dist_map : np.ndarray) -> list:
                   brain_axial_coords.max()] 
     
     # Locate limits in distance maps
-    distance_axial_coords = np.where(dist_map < dist_map.max())[0] 
-    dist_lims = [distance_axial_coords.min(),
-                 distance_axial_coords.max()]
+    cta_mean_axial = np.mean(cta, axis=(1,2))
+    cta_axial_coords = np.where(cta_mean_axial > -1024)[0] 
+    cta_lims = [cta_axial_coords.min(),
+                 cta_axial_coords.max()]
 
     # Combine limit definitions
-    lims = [max(brain_lims[0] , dist_lims[0]),
-            min(brain_lims[-1] , dist_lims[-1])] 
+    lims = [max(brain_lims[0] , cta_lims[0]),
+            min(brain_lims[-1] , cta_lims[-1])] 
 
-    return lims   
+    return lims  
 
 
+def plan_architecture(c : dict):
+    """
+    Plan patch size and architecture
 
-def preprocess_dataset():
+    Params
+    ------
+    c : configuration for nnUNet v2
+    
+    """
+    # Set up runner
+    runner = nnUNetV2Runner(c)
+
+    # Allow only planning, disable preprocessing
+    runner._preprocess = lambda *args, **kwargs: print("Skipping preprocessing...")
+
+    # Run only the planning
+    runner.run("plan_and_process")  
+
+
+def preprocess_dataset(args):
+
+   # Load task argument
+   task_id = args.task
 
    # Load configuration
    cfg_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cfg_translation.json")
@@ -454,17 +673,13 @@ def preprocess_dataset():
    assert (
        os.path.exists(cfg_file) and ".json" in cfg_file
    ), f"Configuration file '{cfg_file}' does not exist or is not .json"
-   cfg = load_json(cfg_file)
+   cfg = load_data(cfg_file)
    cfg_keys = list(cfg.keys())
-   #required_keys = ["patch_size", "workers", "downsample"]
-
-   #for k in required_keys:
-       # Check that all required keys are present
-       #assert k in cfg_keys, f"'{k}' not in configuration"  
 
 
    # Determine folders
    raw_splitted = os.path.join(os.getenv("data_folder"), "raw_splitted")
+   raw_cropped = os.path.join(os.getenv("data_folder"), "raw_cropped")
    preprocessed = os.path.join(os.getenv("data_folder"), "preprocessed")
 
 
@@ -483,22 +698,39 @@ def preprocess_dataset():
    log_file = os.path.join(preprocessed, "preprocessing.log")
    logger.add(log_file, level="INFO")
 
+   # Data cropping
+
    # Set up plan file, and load plan if it already exists
-   plan_file = os.path.join(preprocessed, "plan.json")
+   plan_file = os.path.join(preprocessed, "plan_preprocess.json")
    plan = {}
    keys_analysis = ["cta", "time", "dist"]
    if os.path.exists(plan_file):
        # Load precomputed values from previous runs
-       plan = load_json(plan_file)
+       plan = load_data(plan_file)
        median_spacing = plan["spacing"]
        global_mean, global_std = {}, {}
        for keys in keys_analysis:
           global_mean[keys]  = plan[f"stats_{keys}"]["mean"]
           global_std[keys]  = plan[f"stats_{keys}"]["std"]
 
+   # Create datalist
+   datalist_file = os.path.join(preprocessed, "datalist.json") 
+   if not(os.path.exists(datalist_file)):
+      datalist = create_datalist(folder = raw_cropped)
+      write_data(data=datalist, filename=datalist_file)
+
+   # Create config.yaml
+   if not(os.path.exists(configyaml)):
+    config = create_configyaml(task_id = task_id)
+   
    # Data preparation
-   logger.info("Preparing data...")
-   data = build_data(folder=raw_splitted)
+   logger.info("Preparing data and cropping...")
+   data = build_data_crop(folder=raw_splitted, 
+                          workers=cfg["workers"], 
+                          key="Tr")
+   data_test = build_data_crop(folder=raw_splitted, 
+                          workers=cfg["workers"], 
+                          key="Ts")
 
    # Planning
    logger.info(
@@ -520,14 +752,18 @@ def preprocess_dataset():
           plan[f"stats_{key}"] = stats_key
 
        # Save plan file
-       save_json(data=plan, path=plan_file)
+       write_data(data=plan, path=plan_file)
 
 
    logger.info(f"✅ Median spacing (Z, Y, X): {median_spacing}")
    for keys in keys_analysis:
-      logger.info(f"✅ Global mean, global std: {global_mean[keys]}, {global_std[keys]}")
+      logger.info(f"✅ Global mean {keys}, global std {keys}: {global_mean[keys]}, {global_std[keys]}")
+
+   # Architecture planning
+   plan_architecture(c=config) 
 
    sys.exit()
+
    transforms = get_preprocessing_transforms(
        patch_size=cfg["patch_size"],
        downsample=cfg["downsample"],
@@ -550,9 +786,16 @@ def preprocess_dataset():
            logger.info(f"Processed batch shape: {images.shape}, labels: {labels}")
 
 
+def get_args():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task", help="Task folder", type=str)
+    args = parser.parse_args()
+
+    return args
 
 
 if __name__ == "__main__":
     t1 = time.time()
-    preprocess_dataset()
+    preprocess_dataset(get_args())
     print(f"Time ellapsed: {time.time()-t1}sec")
