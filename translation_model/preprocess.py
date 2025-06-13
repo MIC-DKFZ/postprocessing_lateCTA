@@ -618,7 +618,7 @@ def get_preprocessing_transforms(
 
 
 
-def skip_processed(data: list, out_folder: os.PathLike) -> list:
+def skip_processed(data: list, out_folder: os.PathLike, key : str = "cta") -> list:
    """
    Skip file if already processed
 
@@ -627,7 +627,7 @@ def skip_processed(data: list, out_folder: os.PathLike) -> list:
    ------
    data : data objects
    out_folder : output folder
-   task_id : task folder
+   key : data type being analyzed ("cta", "time", "dist")
 
    Returns
    -------
@@ -636,9 +636,16 @@ def skip_processed(data: list, out_folder: os.PathLike) -> list:
 
    """
    data_out = []
+   suffix = "0000"
+
+   if key.lower().strip() == "time":
+       suffix = "time"
+   elif key.lower().strip() == "dist":
+       suffix = "dist"
+
    for d in data:
        outfile = os.path.join(out_folder, 
-                              f"{d['cid']}.b2nd")
+                              f"{d['cid']}_{suffix}.b2nd")
        if not os.path.exists(outfile):
            data_out.append(d)
 
@@ -773,18 +780,24 @@ def processing(global_mean : float, global_std : float, out_folder : os.PathLike
                                              key=key,
                                              median_spacing=median_spacing)
    data = skip_processed(data=data, 
-                         out_folder=out_folder)
+                         out_folder=out_folder,
+                         key=key)
    dataset = Dataset(data=data, 
                      transform=transforms)
    dataloader = DataLoader(dataset, 
                            batch_size=1, 
                            num_workers=cfg["workers"])
 
+   suffix = "0000"
+   if key.lower().strip() == "time":
+       suffix = "time"
+   elif key.lower().strip() == "dist":
+       suffix = "dist" 
 
    for batch in dataloader:
        # Skip files that have already been preprocessed
        outfile = os.path.join(out_folder, 
-                              f"{batch['cid'][0]}.b2nd")
+                              f"{batch['cid'][0]}_{suffix}.b2nd")
        if not (os.path.exists(outfile)):
            images = batch[key]
            logger.info(f"{batch['cid']} : Processed batch shape: {images.shape[2:]}, key: {key}")
