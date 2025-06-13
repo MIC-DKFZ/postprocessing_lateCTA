@@ -13,15 +13,12 @@ from scipy.ndimage import center_of_mass, shift
 import argparse
 import time
 
-from monai.bundle import ConfigParser
 from monai.apps.nnunet import nnUNetV2Runner
 from monai.transforms import (
    Compose,
    LoadImaged,
    EnsureChannelFirstd,
    Spacingd,
-   ScaleIntensityd,
-   ResizeWithPadOrCropd,
    ToNumpyd,
 )
 from monai.data import Dataset, DataLoader
@@ -60,17 +57,27 @@ def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, task_
     label_crop_folder = os.path.join(crop_folder, task_id, f"labels{key}") 
     brain_crop_folder = os.path.join(crop_folder, task_id, f"brain{key}") 
 
+    if not(os.path.exists(cta_crop_folder)):
+        os.makedirs(cta_crop_folder)
+    if not(os.path.exists(label_crop_folder)):
+        os.makedirs(label_crop_folder)
+    if not(os.path.exists(brain_crop_folder)):
+        os.makedirs(brain_crop_folder)
+
     if ".nii.gz" in cta_file:
         # Fill in data information
         cid = cta_file.replace(".nii.gz", "") 
 
         cta_crop_file = os.path.join(cta_crop_folder, cta_file)
+        cta_crop_file = cta_crop_file.replace(".nii.gz", "_0000.nii.gz")
         time_crop_file = os.path.join(label_crop_folder, 
                                     f"{cid}_time.nii.gz") 
         dist_crop_file = os.path.join(label_crop_folder, 
                                     f"{cid}_dist.nii.gz") 
         brain_crop_file = os.path.join(brain_crop_folder, 
                                     f"{cid}.nii.gz") 
+        bin_crop_file = os.path.join(label_crop_folder, 
+                                    f"{cid}.nii.gz")
         
         cid_dict = {"cid" : cid,
                     "cta" : cta_crop_file,
@@ -79,7 +86,7 @@ def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, task_
                     "brain" : brain_crop_file} 
 
         # Crop data
-        if not(os.path.exists(cta_crop_file)) or not(os.path.exists(dist_crop_file)) or not(os.path.exists(brain_crop_file)):
+        if not(os.path.exists(cta_crop_file)) or not(os.path.exists(dist_crop_file)) or not(os.path.exists(brain_crop_file)) or not(os.path.exists(bin_crop_file)):
             cta_file = os.path.join(cta_folder, cta_file)
             time_file = os.path.join(label_folder, 
                                     f"{cid}_time.nii.gz") 
@@ -87,12 +94,14 @@ def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, task_
                                     f"{cid}_dist.nii.gz") 
             brain_file = os.path.join(brain_folder, 
                                     f"{cid}.nii.gz")
+            
         
             cta_image = sitk.ReadImage(cta_file)
             cta_img = sitk.GetArrayFromImage(cta_image)
             
             time_image = sitk.ReadImage(time_file)
             time_img = sitk.GetArrayFromImage(time_image)
+            bin_img = (time_img > 0).astype(np.uint8)
 
             dist_image = sitk.ReadImage(dist_file)
             dist_img = sitk.GetArrayFromImage(dist_image)
@@ -100,16 +109,17 @@ def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, task_
             brain_image = sitk.ReadImage(brain_file)
             brain_img = sitk.GetArrayFromImage(brain_image)
 
-            print(cta_crop_file, time_crop_file, dist_crop_file, brain_crop_file)
-            sys.exit()
-
             lims = extract_brain_limits(brain_seg=brain_img,
                                         cta = cta_img)
             
-            imgs = [cta_img, time_img, 
-                    dist_img, brain_img]
+            # Restrict CTA image only to the brain
+            cta_img_copy = cta_img.copy()
+            cta_img_copy[dist_img == dist_img.max()] = -1024
+            
+            imgs = [cta_img_copy, time_img, 
+                    dist_img, brain_img, bin_img]
             outfiles = [cta_crop_file, time_crop_file, 
-                        dist_crop_file, brain_crop_file] 
+                        dist_crop_file, brain_crop_file, bin_crop_file] 
             
             print(f"Cropping {cid}...")
             for img, outfile in zip(imgs, outfiles):
@@ -213,6 +223,39 @@ def create_configyaml(task_id : str):
     
     return config
 
+
+def create_datasetjson(task_id : str, num_training : int, outfile : os.PathLike):
+    """
+    Create dataset.json file for patch size and architecture
+    optimization
+
+    Params
+    ------
+    task_id : task information
+    num_training : number of training cases
+    outfile : output file
+
+    Returns
+    -------
+    Saved dataset.json file
+    
+    """
+    dataset = {"channel_names" : {"0" : "CT"},
+               "labels" : {"background" : 0,
+                           "lesion" : 1},
+               "numTraining" : num_training,
+               "file_ending" : ".nii.gz",
+               "name" : task_id,
+               "reference" : "",
+               "release" : "",
+               "description" : "",
+               "overwrite_image_reader_writer" : "NibabelIOWithReorient"}
+    
+    write_data(data=dataset, 
+               filename=outfile)
+
+
+
 def build_data_crop(folder : os.PathLike, task_id : str, workers : int = 6, key : str = "Tr") -> list:
     """
     Derive dataframe with case IDs and corresponding 
@@ -281,6 +324,7 @@ def cropping(img : np.ndarray, lims : list, image, outfile : os.PathLike):
 
     sitk.WriteImage(crop_image, outfile)
 
+
 def center_image_on_mask(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
    # Compute the centroid of the mask
    centroid = center_of_mass(mask.astype(bool))
@@ -310,6 +354,7 @@ class CropEmptyAxialSlicesd(MapTransform):
    def __init__(self, keys, margin=2):
        super().__init__(keys)
        self.margin = margin
+       self.keys = keys
 
 
    def __call__(self, data):
@@ -331,11 +376,11 @@ class CropEmptyAxialSlicesd(MapTransform):
 
 
        # Step 3: Ensure the mask is on the same device as the image
-       mask_torch = mask_torch.to(d["image"].device)
+       mask_torch = mask_torch.to(d[self.keys[0]].device)
 
 
        # Step 4: Set image values to -1024 where mask is False (0)
-       d["image"][~mask_torch] = -1024
+       d[self.keys[0]][~mask_torch] = -1024
 
 
        for key in self.keys:
@@ -349,9 +394,10 @@ class CropEmptyAxialSlicesd(MapTransform):
        # Center image on mask centroid
        mask_trimmed = mask[z_min : (z_max + 1)]
        image_centered = center_image_on_mask(
-           image=d["image"][0].numpy(), mask=mask_trimmed
+           image=d[self.keys[0]][0].numpy(), mask=mask_trimmed
        )
-       d["image"][0] = torch.tensor(image_centered, device=d["image"].device)
+       d[self.keys[0]][0] = torch.tensor(image_centered, 
+                                         device=d[self.keys[0]].device)
 
 
        return d
@@ -384,36 +430,39 @@ class SaveAsBlosc2d(MapTransform):
 
    def __init__(self, keys, output_dir):
        super().__init__(keys)
+       self.key = keys[0]
        self.output_dir = output_dir
        os.makedirs(self.output_dir, exist_ok=True)
 
 
    def __call__(self, data):
        d = dict(data)
-       save_path = os.path.join(self.output_dir, f"{d['cid']}.b2nd")
-
+       # Determine filename suffix to store data
+       suffix = "0000"
+       if self.key.lower().strip() == "time":
+           suffix = "time"
+       elif self.key.lower().strip() == "dist":
+           suffix = "dist" 
+       save_path = os.path.join(self.output_dir, 
+                                f"{d['cid']}_{suffix}.b2nd")
 
        # Save just the array for the "image" key
        arr = d[self.keys[0]]
        if hasattr(arr, "numpy"):
            arr = arr.numpy()
        arr = np.ascontiguousarray(arr.squeeze())
-
-
-       """
-       plt.figure()
-       plt.subplot(311)
-       plt.imshow(arr[arr.shape[0] // 2], cmap="gray")
-       plt.colorbar()
-       plt.subplot(312)
-       plt.imshow(arr[:, arr.shape[1] // 2], cmap="gray")
-       plt.colorbar()
-       plt.subplot(313)
-       plt.imshow(arr[:, :, arr.shape[2] // 2], cmap="gray")
-       plt.colorbar()
-       plt.show()
-       """
-
+       
+       #plt.figure()
+       #plt.subplot(311)
+       #plt.imshow(arr[arr.shape[0] // 2], cmap="gray")
+       #plt.colorbar()
+       #plt.subplot(312)
+       #plt.imshow(arr[:, arr.shape[1] // 2], cmap="gray")
+       #plt.colorbar()
+       #plt.subplot(313)
+       #plt.imshow(arr[:, :, arr.shape[2] // 2], cmap="gray")
+       #plt.colorbar()
+       #plt.show()
 
        # Convert to a Blosc2 NDArray
        blosc2.asarray(arr, urlpath=save_path)
@@ -514,12 +563,13 @@ class EnsureZYXShapeD(MapTransform):
 
 
    def __init__(self, keys):
+       self.keys = keys
        super().__init__(keys)
 
 
    def __call__(self, data):
        d = dict(data)
-       d["image"] = torch.swapaxes(d["image"], 1, -1)
+       d[self.keys[0]] = torch.swapaxes(d[self.keys[0]], 1, -1)
        return d
 
 
@@ -528,33 +578,39 @@ class EnsureZYXShapeD(MapTransform):
 def get_preprocessing_transforms(
    global_mean: float,
    global_std: float,
-   preprocessed_folder: os.PathLike,
-   downsample: float = 1.0,
-   key: str = "Tr",
-   patch_size: tuple = (96, 96, 96),
+   out_folder : os.PathLike,
+   key: str,
    median_spacing: tuple = (1.0, 1.0, 1.0),
 ):
+   """
+   Obtain preprocessing transforms
 
+   Params
+   ------
+   global_mean : global mean value for normalization
+   global_std : global standard deviation value for normalization
+   out_folder : output folder
+   key : image to be processed ("cta", "time", "dist")
+   median_spacing : median spacing
 
-   out_folder = os.path.join(preprocessed_folder, f"images{key}")
-   if not (os.path.exists(out_folder)):
-       os.makedirs(out_folder)
+   Returns
+   -------
+   transforms : preprocessing transforms
+   
+   """
 
-
-   spacing = [sp * downsample for sp in median_spacing]
    transforms = [
-       LoadImaged(keys=["image"], meta_keys=["image"]),
-       EnsureChannelFirstd(keys=["image"]),
-       EnsureZYXShapeD(keys=["image"]),
-       CropEmptyAxialSlicesd(
-           keys=["image"],
-       ),
-       Spacingd(keys=["image"], pixdim=spacing, mode="bilinear"),
-       ScaleIntensityd(keys=["image"]),
-       ResizeWithPadOrCropd(keys=["image"], spatial_size=patch_size),
-       GlobalNormalize(keys=["image"], mean=global_mean, std=global_std),
-       ToNumpyd(keys=["image"]),
-       SaveAsBlosc2d(keys=["image"], output_dir=out_folder),
+       LoadImaged(keys=[key]), # Load image
+       EnsureChannelFirstd(keys=[key]), # Ensure axes are Z, Y, X
+       EnsureZYXShapeD(keys=[key]), # Remove channel dimension
+       GlobalNormalize(keys=[key], 
+                       mean=global_mean, 
+                       std=global_std), # Normalization
+       Spacingd(keys=[key], 
+                pixdim=median_spacing, 
+                mode="bilinear"), # Image resampling
+       ToNumpyd(keys=[key]), # Conversion to numpy array
+       SaveAsBlosc2d(keys=[key], output_dir=out_folder), # Storage as .b2nd file
    ]
 
 
@@ -562,7 +618,7 @@ def get_preprocessing_transforms(
 
 
 
-def skip_processed(data: list, preprocessed: os.PathLike, key: str = "Tr") -> list:
+def skip_processed(data: list, out_folder: os.PathLike) -> list:
    """
    Skip file if already processed
 
@@ -570,8 +626,8 @@ def skip_processed(data: list, preprocessed: os.PathLike, key: str = "Tr") -> li
    Params
    ------
    data : data objects
-   preprocessed : preprocessed folder
-
+   out_folder : output folder
+   task_id : task folder
 
    Returns
    -------
@@ -581,7 +637,8 @@ def skip_processed(data: list, preprocessed: os.PathLike, key: str = "Tr") -> li
    """
    data_out = []
    for d in data:
-       outfile = os.path.join(preprocessed, f"images{key}", f"{d['cid']}.b2nd")
+       outfile = os.path.join(out_folder, 
+                              f"{d['cid']}.b2nd")
        if not os.path.exists(outfile):
            data_out.append(d)
 
@@ -650,23 +707,89 @@ def extract_brain_limits(brain_seg : np.ndarray, cta : np.ndarray) -> list:
     return lims  
 
 
-def plan_architecture(c : dict):
+def plan_architecture(c : dict, plan : dict, folder : os.PathLike, plan_file : os.PathLike, target_mem : float = 11.0) -> dict:
     """
     Plan patch size and architecture
 
     Params
     ------
     c : configuration for nnUNet v2
+    plan : original preprocessing plan
+    folder : preprocessing folder containing nnU-Net plan
+    plan_file : filename for original plan
+
+    Returns
+    -------
+    final_plan : updated plan with architecture information
     
     """
     # Set up runner
     runner = nnUNetV2Runner(c)
 
-    # Allow only planning, disable preprocessing
-    runner._preprocess = lambda *args, **kwargs: print("Skipping preprocessing...")
-
     # Run only the planning
-    runner.run("plan_and_process")  
+    runner.plan_experiments(gpu_memory_target=target_mem)
+
+    # Include patch size, batch size, 
+    # and architectural details into main plan
+    plan_nnunet_file = os.path.join(folder, "nnUNetPlans.json")
+    assert os.path.exists(plan_nnunet_file), f"nnUNet plan file '{plan_nnunet_file}' does not exist"
+    plan_nnunet = load_data(filename=plan_nnunet_file)
+    patch_size = plan_nnunet["configurations"]["3d_fullres"]["patch_size"]
+    batch_size = plan_nnunet["configurations"]["3d_fullres"]["batch_size"]
+    arch = plan_nnunet["configurations"]["3d_fullres"]["architecture"]
+
+    # Flip patch size
+    patch_size[0], patch_size[1] = patch_size[1], patch_size[0]
+
+    plan["patch_size"] = patch_size
+    plan["batch_size"] = batch_size
+    plan["architecture"] = arch
+
+    write_data(data=plan, filename=plan_file)
+
+
+
+def processing(global_mean : float, global_std : float, out_folder : os.PathLike, key : str, median_spacing : list, cfg : dict, data : dict):
+   """
+   Apply preprocessing with parameters
+
+   Params
+   ------
+   global_mean : global mean for normalization
+   global_std : global standard deviation for normalization
+   out_folder : output folder
+   key : image to be processed ('cta' for CTA, 'time' for temporal image, 
+   'dist' for distance map)
+   median_spacing : median spacing for image resampling
+   cfg : final configuration
+   data : dataset to be processed
+   
+   """
+
+   # Derive transforms for each type of image 
+   transforms = get_preprocessing_transforms(global_mean=global_mean,
+                                             global_std=global_std,
+                                             out_folder=out_folder,
+                                             key=key,
+                                             median_spacing=median_spacing)
+   data = skip_processed(data=data, 
+                         out_folder=out_folder)
+   dataset = Dataset(data=data, 
+                     transform=transforms)
+   dataloader = DataLoader(dataset, 
+                           batch_size=1, 
+                           num_workers=cfg["workers"])
+
+
+   for batch in dataloader:
+       # Skip files that have already been preprocessed
+       outfile = os.path.join(out_folder, 
+                              f"{batch['cid'][0]}.b2nd")
+       if not (os.path.exists(outfile)):
+           images = batch[key]
+           logger.info(f"{batch['cid']} : Processed batch shape: {images.shape[2:]}, key: {key}")
+
+
 
 
 def preprocess_dataset(args):
@@ -681,7 +804,6 @@ def preprocess_dataset(args):
        os.path.exists(cfg_file) and ".json" in cfg_file
    ), f"Configuration file '{cfg_file}' does not exist or is not .json"
    cfg = load_data(cfg_file)
-   cfg_keys = list(cfg.keys())
 
 
    # Determine folders
@@ -765,36 +887,38 @@ def preprocess_dataset(args):
        # Save plan file
        write_data(data=plan, path=plan_file)
 
-
+   plan_keys = list(plan.keys())
+   
    logger.info(f"✅ Median spacing (Z, Y, X): {median_spacing}")
    for keys in keys_analysis:
       logger.info(f"✅ Global mean {keys}, global std {keys}: {global_mean[keys]}, {global_std[keys]}")
 
-   # Architecture planning
-   plan_architecture(c=config) 
+   # Create dataset.json
+   datasetjson = os.path.join(raw_cropped, 
+                              "dataset.json")
+   if not(os.path.exists(datasetjson)):
+       create_datasetjson(task_id=task_id,
+                          num_training=len(data),
+                          outfile=datasetjson)  
 
-   sys.exit()
-
-   transforms = get_preprocessing_transforms(
-       patch_size=cfg["patch_size"],
-       downsample=cfg["downsample"],
-       preprocessed_folder=preprocessed,
-       median_spacing=median_spacing,
-       global_mean=global_mean,
-       global_std=global_std,
-   )
-   data = skip_processed(data=data, preprocessed=preprocessed)
-   dataset = Dataset(data=data, transform=transforms)
-   dataloader = DataLoader(dataset, batch_size=1, num_workers=cfg["workers"])
-
-
-   for batch in dataloader:
-       # Skip files that have already been preprocessed
-       outfile = os.path.join(preprocessed, "imagesTr", f"{batch['cid'][0]}.b2nd")
-       if not (os.path.exists(outfile)):
-           images = batch["image"]
-           labels = batch["label"]
-           logger.info(f"Processed batch shape: {images.shape}, labels: {labels}")
+   # Architecture planning (later for training)
+   if ("batch_size" not in plan_keys) or ("patch_size" not in plan_keys) or ("architecture" not in plan_keys):
+       plan_architecture(c=config, 
+                        plan = plan, 
+                        folder=preprocessed, 
+                        plan_file=plan_file,
+                        target_mem=cfg["gpu_mem"]) 
+       
+   # Apply processing
+   for key in keys_analysis:
+       out_folder = os.path.join(preprocessed, "imagesTr") if key.lower().strip() == "cta" else os.path.join(preprocessed, "labelsTr")
+       processing(global_mean=global_mean[key],
+                  global_std=global_std[key],
+                  out_folder=out_folder,
+                  key=key,
+                  median_spacing=median_spacing,
+                  cfg=cfg,
+                  data=data) 
 
 
 def get_args():
