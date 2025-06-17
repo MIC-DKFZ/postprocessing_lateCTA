@@ -42,5 +42,4 @@
 "weight_decay" : 3e-5,
 "foreground_ratio" : 0.5,
 "border_data" : 0,
-"order_interp" : 3,
-}
+"order_interp" : 3}
