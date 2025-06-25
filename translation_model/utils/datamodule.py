@@ -1,6 +1,7 @@
 import os,sys
 import torch
 import numpy as np
+import random
 from torch.utils.data import DataLoader, Dataset
 import torch.nn.functional as F
 import pytorch_lightning as pl
@@ -37,7 +38,8 @@ class CachedGuidedPatchDataset(Dataset):
         dist_paths : list,
         time_paths : list,
         cfg : dict, 
-        patch_size : list
+        patch_size : list,
+        val : bool = False
     ):
         """
         Args:
@@ -46,6 +48,7 @@ class CachedGuidedPatchDataset(Dataset):
         time_paths : time filepaths
         cfg : hyperparameter configuration
         patch_size : patch size
+        val : whether dataset is for validation (True) or training (False)
 
         """
         self.image_paths = image_paths
@@ -53,6 +56,7 @@ class CachedGuidedPatchDataset(Dataset):
         self.time_paths = time_paths
         self.cfg = cfg
         self.patch_size = patch_size
+        self.val = val
 
         # Precompute coordinates for sampling
         self.vessel_coords, self.brain_coords = self.cache_vessel_coords()
@@ -91,13 +95,21 @@ class CachedGuidedPatchDataset(Dataset):
         return vessel_coords, brain_coords
 
     def __len__(self):
-        return len(self.image_paths)
+        l = self.cfg["train_batches_epoch"]
+        if self.val:
+            l = self.cfg["val_batches_epoch"]
+
+        if l > len(self.image_paths):
+            return len(self.image_paths)
+        
+        return l
 
     def __getitem__(self, index):
         # Path sampling
-        image_path = self.image_paths[index]
-        time_path = self.time_paths[index]
-        dist_path = self.dist_paths[index]
+        ind = random.randint(0, len(self.image_paths)-1) # Random sampler
+        image_path = self.image_paths[ind]
+        time_path = self.time_paths[ind]
+        dist_path = self.dist_paths[ind]
 
         # Device 
         dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -115,7 +127,7 @@ class CachedGuidedPatchDataset(Dataset):
         brain_mask = dist < dist.max()
 
         # Extract patch center
-        center = self._derive_center(index=index)
+        center = self._derive_center(index=ind)
 
         # Extract patches
         img_patch = self._extract_patch(img, center)
@@ -252,12 +264,14 @@ class CTAPatchDataModule(pl.LightningDataModule):
                                                       dist_paths = self.train_cases[:,1],
                                                       time_paths = self.train_cases[:,2],
                                                       cfg = self.cfg,
-                                                      patch_size = self.patch_size)
+                                                      patch_size = self.patch_size,
+                                                      val = False)
         self.val_dataset = CachedGuidedPatchDataset(image_paths = self.val_cases[:,0],
                                                     dist_paths = self.val_cases[:,1],
                                                     time_paths = self.val_cases[:,2],
                                                     cfg = self.cfg,
-                                                    patch_size = self.patch_size)
+                                                    patch_size = self.patch_size,
+                                                    val = True)
 
         # Train loader wrapped with BatchGenerators
         base_loader = TripletDataLoader(self.train_dataset, batch_size=self.batch_size)

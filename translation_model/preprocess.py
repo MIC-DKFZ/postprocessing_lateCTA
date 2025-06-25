@@ -71,9 +71,9 @@ def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, task_
         cta_crop_file = os.path.join(cta_crop_folder, cta_file)
         cta_crop_file = cta_crop_file.replace(".nii.gz", "_0000.nii.gz")
         time_crop_file = os.path.join(label_crop_folder, 
-                                    f"{cid}_time.nii.gz") 
+                                    f"{cid}_0001.nii.gz") 
         dist_crop_file = os.path.join(label_crop_folder, 
-                                    f"{cid}_dist.nii.gz") 
+                                    f"{cid}_0000.nii.gz") 
         brain_crop_file = os.path.join(brain_crop_folder, 
                                     f"{cid}.nii.gz") 
         bin_crop_file = os.path.join(label_crop_folder, 
@@ -119,12 +119,20 @@ def build_data_crop_parallel(folder : os.PathLike, cta_file : os.PathLike, task_
             imgs = [cta_img_copy, time_img, 
                     dist_img, brain_img, bin_img]
             outfiles = [cta_crop_file, time_crop_file, 
-                        dist_crop_file, brain_crop_file, bin_crop_file] 
+                        dist_crop_file, brain_crop_file] 
             
             print(f"Cropping {cid}...")
             for img, outfile in zip(imgs, outfiles):
                 cropping(img = img, lims = lims, 
                             image=time_image, outfile=outfile)
+                
+            outfile = dist_crop_file.replace("_0000.nii.gz", ".nii.gz")
+
+            two_channel_img = np.zeros([2] + list(time_img.shape))
+            two_channel_img[0] = dist_img
+            two_channel_img[1] = time_img
+            cropping(img = two_channel_img, lims = lims, 
+                     image=time_image, outfile=outfile)
                     
     return cid_dict
 
@@ -316,7 +324,10 @@ def cropping(img : np.ndarray, lims : list, image, outfile : os.PathLike):
     Saved cropped image in output file
     
     """
-    crop_img = img[lims[0]:(lims[1]+1)]
+    if len(img.shape) < 4:
+        crop_img = img[lims[0]:(lims[1]+1)]
+    else:
+        crop_img = img[:,lims[0]:(lims[1]+1)]
     crop_image = sitk.GetImageFromArray(crop_img)
     crop_image.SetOrigin(image.GetOrigin())
     crop_image.SetSpacing(image.GetSpacing())

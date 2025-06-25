@@ -11,7 +11,7 @@ from joblib import Parallel, delayed
 import matplotlib.pyplot as plt
 
 from compute_phase import apply_window
-from utils.segment_carotid_ctp import segment_brain
+#from utils.segment_carotid_ctp import segment_brain
 
 def distance_map(img : np.ndarray, val : float, spacing : np.ndarray):
     """
@@ -166,6 +166,61 @@ def signed_time_image(img : np.ndarray):
     return signed_img    
 
 
+def process_file(time_file : os.PathLike, outfile : os.PathLike):
+    """
+    Obtain Eikonal distance map from time file
+
+    Params
+    ------
+    time_file : file with time vessel information
+    outfile : output file
+
+    Returns
+    -------
+    Saved distance map and QA file
+    
+    """
+    if not(os.path.exists(outfile)):
+        print(f"Processing {os.path.basename(outfile)}")
+        image = sitk.ReadImage(time_file)
+        img = sitk.GetArrayFromImage(image)
+        spacing = np.array(image.GetSpacing())
+
+        # Obtain distance map
+        final = distance_map_full(img = img, 
+                                  spacing=spacing)
+
+        # Save final result 
+        final_map_image = sitk.GetImageFromArray(final.astype(np.float32))
+        final_map_image.CopyInformation(image)
+        sitk.WriteImage(final_map_image, outfile)
+        
+        # Save plots for QA 
+        ww_img = np.percentile(img[img > 0], 99)
+        ww_final = np.percentile(final, 99) - np.percentile(final, 1)
+        min_final = np.percentile(final, 1) + ww_final/2
+        final_w = apply_window(image=final, window_center=min_final, window_width=ww_final)
+        img_w = apply_window(image=img, window_center=ww_img/2, window_width=ww_img)
+        images = [final_w, img_w] 
+
+        plt.figure()
+        for enum_i, i in enumerate(images):
+            plt.subplot(2,3,enum_i*3 + 1)
+            plt.imshow(i[i.shape[0]//2])
+            plt.xticks([])
+            plt.yticks([])
+            plt.subplot(2,3,enum_i*3 + 2)
+            plt.imshow(i[:,i.shape[1]//2])
+            plt.xticks([])
+            plt.yticks([])
+            plt.subplot(2,3,enum_i*3 + 3)
+            plt.imshow(i[:,:,i.shape[2]//2])
+            plt.xticks([])
+            plt.yticks([])
+
+        plt.savefig(outfile.replace(".nii.gz", ".png"))
+        plt.close()
+
 def main(args):
     time_folder = args.t
     brain_folder = args.b
@@ -174,7 +229,7 @@ def main(args):
     bins = args.bin
 
     assert os.path.exists(time_folder), f"Time folder '{time_folder}' does not exist"
-    assert os.path.exists(brain_folder), f"Brain folder '{brain_folder}' does not exist"
+    #assert os.path.exists(brain_folder), f"Brain folder '{brain_folder}' does not exist"
 
     if not(os.path.exists(out_folder)):
         # Create output folder if it does not exist 
@@ -184,84 +239,7 @@ def main(args):
     files = sorted(os.listdir(time_folder))
     tag = "_norm.nii.gz" # File tag to look for 
 
-    for file in files:
-        if tag in file:
-            cid = file.replace(tag, "")
-            outfile = os.path.join(out_folder, f"{cid}.nii.gz")
-
-            if not(os.path.exists(outfile)):
-                # Skip already processed files
-                print(f"Process case ID: {cid}") 
-                t1 = time.time()
-
-                # Check if brain file exists, otherwise segment the brain
-                brain_file = os.path.join(brain_folder, f"{cid}_brain.nii.gz")
-                if os.path.exists(brain_file):
-                    brain = sitk.GetArrayFromImage(sitk.ReadImage(brain_file))
-                else:
-                    cta_nib = nib.load(brain_file)
-                    brain, _ ,_ = segment_brain(img = cta_nib)
-
-                # Load time image and respective spacing
-                time_file = os.path.join(time_folder, file)
-
-                image = sitk.ReadImage(time_file)
-                img = sitk.GetArrayFromImage(image)
-                spacing = np.array(image.GetSpacing())
-
-                # Obtain signed image providing different signs to arteries and veins
-                # signed_img = signed_time_image(img = img) 
-
-                # Bin time image and get time values of interest
-                # time_vals = bin_times(img = signed_img, bins = bins)
-
-                # print(time_vals)
-
-                # Derive maps for different time steps
-                # distance_maps = [distance_map(img = signed_img, val = t, spacing = spacing) for t in time_vals]
-                # distance_maps = Parallel(n_jobs=workers)(delayed(distance_map)(signed_img, t, spacing) for t in time_vals)
-
-                # Obtain final image
-                # final = weigh_distance_maps(dist_maps=distance_maps, 
-                #                             vals=time_vals, 
-                #                             out_file=outfile, 
-                #                             image=image,
-                #                             brain=brain)
-
-                final = distance_map_full(img = img, spacing=spacing)
-                final[brain == 0] = final.max()
-
-                # Save final result 
-                final_map_image = sitk.GetImageFromArray(final.astype(np.float32))
-                final_map_image.CopyInformation(image)
-                sitk.WriteImage(final_map_image, outfile)
-                
-                # Save plots for QA 
-                ww_img = np.percentile(img[img > 0], 99)
-                ww_final = np.percentile(final[brain > 0], 99) - np.percentile(final[brain > 0], 1)
-                min_final = np.percentile(final[brain > 0], 1) + ww_final/2
-                final_w = apply_window(image=final, window_center=min_final, window_width=ww_final)
-                img_w = apply_window(image=img, window_center=ww_img/2, window_width=ww_img)
-                images = [final_w, img_w] 
-
-                plt.figure()
-                for enum_i, i in enumerate(images):
-                    plt.subplot(2,3,enum_i*3 + 1)
-                    plt.imshow(i[i.shape[0]//2])
-                    plt.xticks([])
-                    plt.yticks([])
-                    plt.subplot(2,3,enum_i*3 + 2)
-                    plt.imshow(i[:,i.shape[1]//2])
-                    plt.xticks([])
-                    plt.yticks([])
-                    plt.subplot(2,3,enum_i*3 + 3)
-                    plt.imshow(i[:,:,i.shape[2]//2])
-                    plt.xticks([])
-                    plt.yticks([])
-
-                plt.savefig(outfile.replace(".nii.gz", ".png"))
-                  
-     
+    Parallel(n_jobs=workers)(delayed(process_file)(os.path.join(time_folder, file), os.path.join(out_folder, file.replace(tag, "") + ".nii.gz")) for file in files if tag in file)
 
 
 def get_args():

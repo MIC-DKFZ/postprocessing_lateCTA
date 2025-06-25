@@ -15,7 +15,6 @@ from utils.load_save import load_data, write_data
 from registration.setParameters import set_parameters
 from registration.registration_utils import get_transformation_matrix, apply_transformation
 from registration.qa_register import compare_files
-from utils.segment_carotid_ctp import segment_brain
 
 
 def prepare_data_gmm(img : np.ndarray, mask : np.ndarray, brain_mask : np.ndarray) -> Union[np.ndarray, np.ndarray, np.ndarray]:
@@ -211,6 +210,8 @@ def derive_bbox(mask : np.ndarray) -> list:
     return bbox
 
 def main(args):
+    from utils.segment_carotid_ctp import segment_brain
+    
     atlas_folder = args.atlas
     cta_folder = args.cta
     outfile = args.out
