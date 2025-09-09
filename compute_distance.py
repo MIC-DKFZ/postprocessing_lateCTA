@@ -8,9 +8,11 @@ import argparse
 import nibabel as nib
 import multiprocessing
 from joblib import Parallel, delayed
+from typing import Union
 import matplotlib.pyplot as plt
 
 from compute_phase import apply_window
+from utils.load_save import load_data, write_data
 #from utils.segment_carotid_ctp import segment_brain
 
 def distance_map(img : np.ndarray, val : float, spacing : np.ndarray):
@@ -166,60 +168,104 @@ def signed_time_image(img : np.ndarray):
     return signed_img    
 
 
-def process_file(time_file : os.PathLike, outfile : os.PathLike):
+def process_file(time_file : os.PathLike, outfile : os.PathLike, norm : bool = False, norm_stats : dict = None) -> Union[float, float, float]:
     """
     Obtain Eikonal distance map from time file
+    Alternatively, obtain also statistics for distance map normalization
 
     Params
     ------
     time_file : file with time vessel information
     outfile : output file
-
+    norm : whether to obtain normalization statistics or not
+    norm_stats : statistics for normalization
+    
     Returns
     -------
     Saved distance map and QA file
+
+    Alternatively:
+    
+    n : number of voxels in distance map (ignoring voxels below 0.5 percentile or over 99.5 percentile)
+    s : sum of voxels in distance map (ignoring voxels below 0.5 percentile or over 99.5 percentile)
+    s_squares : sum of squared voxels in distance map (ignoring voxels below 0.5 percentile or over 99.5 percentile)
     
     """
+
     if not(os.path.exists(outfile)):
-        print(f"Processing {os.path.basename(outfile)}")
         image = sitk.ReadImage(time_file)
         img = sitk.GetArrayFromImage(image)
         spacing = np.array(image.GetSpacing())
 
-        # Obtain distance map
-        final = distance_map_full(img = img, 
-                                  spacing=spacing)
-
-        # Save final result 
-        final_map_image = sitk.GetImageFromArray(final.astype(np.float32))
-        final_map_image.CopyInformation(image)
-        sitk.WriteImage(final_map_image, outfile)
         
-        # Save plots for QA 
-        ww_img = np.percentile(img[img > 0], 99)
-        ww_final = np.percentile(final, 99) - np.percentile(final, 1)
-        min_final = np.percentile(final, 1) + ww_final/2
-        final_w = apply_window(image=final, window_center=min_final, window_width=ww_final)
-        img_w = apply_window(image=img, window_center=ww_img/2, window_width=ww_img)
-        images = [final_w, img_w] 
+        # Obtain distance map
+        #final = distance_map_full(img = img, 
+        #                          spacing=spacing)
 
-        plt.figure()
-        for enum_i, i in enumerate(images):
-            plt.subplot(2,3,enum_i*3 + 1)
-            plt.imshow(i[i.shape[0]//2])
-            plt.xticks([])
-            plt.yticks([])
-            plt.subplot(2,3,enum_i*3 + 2)
-            plt.imshow(i[:,i.shape[1]//2])
-            plt.xticks([])
-            plt.yticks([])
-            plt.subplot(2,3,enum_i*3 + 3)
-            plt.imshow(i[:,:,i.shape[2]//2])
-            plt.xticks([])
-            plt.yticks([])
+        cid = os.path.basename(time_file).replace("_norm.nii.gz", "")
+        distfile = os.path.join("/scratch/amartinezmora/preprocessed/distance_maps_full", 
+                                f"{cid}.nii.gz")
+        final = sitk.GetArrayFromImage(sitk.ReadImage(distfile))
 
-        plt.savefig(outfile.replace(".nii.gz", ".png"))
-        plt.close()
+        if not(norm) and norm_stats is None:
+            # Save final result 
+            print(f"Processing {os.path.basename(outfile)}")
+            final_map_image = sitk.GetImageFromArray(final.astype(np.float32))
+            final_map_image.CopyInformation(image)
+            sitk.WriteImage(final_map_image, outfile)
+        elif norm_stats is not None:
+            final = final/(norm_stats['std'] + np.finfo(float).eps)
+
+            # Save final result 
+            print(f"Processing {os.path.basename(outfile)}")
+            final_map_image = sitk.GetImageFromArray(final.astype(np.float32))
+            final_map_image.CopyInformation(image)
+            sitk.WriteImage(final_map_image, outfile)
+
+
+        if norm:           
+            # Derive statistics for normalization
+            flattened_map = final.flatten()
+            p05, p995 = np.percentile(flattened_map, 0.5),np.percentile(flattened_map, 99.5)
+            mask = (flattened_map > p05) & (flattened_map < p995)
+            n = mask.sum()
+            s = flattened_map[mask].sum()
+            s_squares = (flattened_map[mask]**2).sum()
+
+            return n, s, s_squares
+        
+        else:
+        
+            # Save plots for QA 
+            ww_img = np.percentile(img[img > 0], 99)
+            ww_final = np.percentile(final, 99) - np.percentile(final, 1)
+            min_final = np.percentile(final, 1) + ww_final/2
+            final_w = apply_window(image=final, window_center=min_final, window_width=ww_final)
+            img_w = apply_window(image=img, window_center=ww_img/2, window_width=ww_img)
+            images = [final_w, img_w] 
+
+            plt.figure()
+            for enum_i, i in enumerate(images):
+                plt.subplot(2,3,enum_i*3 + 1)
+                plt.imshow(i[i.shape[0]//2])
+                plt.xticks([])
+                plt.yticks([])
+                plt.colorbar()
+                plt.subplot(2,3,enum_i*3 + 2)
+                plt.imshow(i[:,i.shape[1]//2])
+                plt.xticks([])
+                plt.yticks([])
+                plt.colorbar()
+                plt.subplot(2,3,enum_i*3 + 3)
+                plt.imshow(i[:,:,i.shape[2]//2])
+                plt.xticks([])
+                plt.yticks([])
+                plt.colorbar()
+
+            plt.savefig(outfile.replace(".nii.gz", ".png"))
+            plt.close()
+
+
 
 def main(args):
     time_folder = args.t
@@ -227,6 +273,7 @@ def main(args):
     workers = args.w
     out_folder = args.o
     bins = args.bin
+    norm = bool(args.norm)
 
     assert os.path.exists(time_folder), f"Time folder '{time_folder}' does not exist"
     #assert os.path.exists(brain_folder), f"Brain folder '{brain_folder}' does not exist"
@@ -239,7 +286,31 @@ def main(args):
     files = sorted(os.listdir(time_folder))
     tag = "_norm.nii.gz" # File tag to look for 
 
-    Parallel(n_jobs=workers)(delayed(process_file)(os.path.join(time_folder, file), os.path.join(out_folder, file.replace(tag, "") + ".nii.gz")) for file in files if tag in file)
+    norm_stats = None
+
+    # Apply normalization, if necessary
+    if norm:
+        params_file = os.path.join(out_folder, "params.json")
+        if os.path.exists(params_file):
+            # Load normalization statistics, if they already exist
+            norm_stats = load_data(filename=params_file)
+        else:
+            params = Parallel(n_jobs=workers)(delayed(process_file)(os.path.join(time_folder, file), os.path.join(out_folder, file.replace(tag, "") + ".nii.gz"), norm) for file in files if tag in file)
+            params = np.array(params)
+
+            # Aggregate stats across case IDs
+            sum_params = np.sum(params, 0)
+
+            mean = float(sum_params[1]/(sum_params[0] + np.finfo(float).eps))
+            std = float(np.sqrt((sum_params[-1]/(sum_params[0] + np.finfo(float).eps))-mean**2))
+            norm_stats = {"mean" : mean, "std" : std}
+            # Save normalization statistics
+            write_data(data=norm_stats, filename=params_file)
+
+        # Set up norm parameter to False
+        norm = False
+
+    Parallel(n_jobs=workers)(delayed(process_file)(os.path.join(time_folder, file), os.path.join(out_folder, file.replace(tag, "") + ".nii.gz"), norm, norm_stats) for file in files if tag in file)
 
 
 def get_args():
@@ -249,6 +320,7 @@ def get_args():
     parser.add_argument("--b", help="Folder with brain information", required=True, type=str)
     parser.add_argument("--w", help="Number of parallel workers", default=6, type=int)
     parser.add_argument("--bin", help="Number of bins to structure time information", default=4, type=int)
+    parser.add_argument("--norm", help="Apply distance-based normalization", default=0, type=int)
     parser.add_argument("--o", help="Output folder", required=True, type=str)
 
     args = parser.parse_args()
