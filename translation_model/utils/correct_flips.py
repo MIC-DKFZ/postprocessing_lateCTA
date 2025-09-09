@@ -3,8 +3,8 @@ import os,sys
 import matplotlib.pyplot as plt
 import SimpleITK as sitk
 
-folder = "/scratch/amartinezmora/translation_model_data/preprocessed_nnunet/Dataset002_nonRestrictedDistance/nnUNetPlans_3d_fullres"
-gt_folder = "/scratch/amartinezmora/translation_model_data/preprocessed_nnunet/Dataset002_nonRestrictedDistance/gt_segmentations"
+folder = "/scratch/amartinezmora/translation_model_data/preprocessed_nnunet/Dataset004_distnorm/nnUNetPlans_3d_fullres"
+gt_folder = "/scratch/amartinezmora/translation_model_data/preprocessed_nnunet/Dataset004_distnorm/gt_segmentations"
 cids = ["mrclean_late_30110", "mrclean_late_30289", "mrclean_late_30309",
        "mrclean_med_20329", "mrclean_noiv_10142", "mrclean_noiv_10214"]
 
@@ -17,50 +17,57 @@ for cid in cids:
     flip_dist = np.flip(dist, flip)
     flip_time = np.flip(time, flip)
 
-    brain_coords = np.array(np.where(img > img.min()))
-             
+    if img.shape[0] == 1:
+        brain_coords = np.array(np.where(img > img.min()))
+    else:
+        brain_coords = np.array(np.where(img[1] > 0))
+
+    if brain_coords.shape[0] > 3:
+        brain_coords = brain_coords[1:]
+
     brain_centroid = np.median(brain_coords,1).astype(int)
     brain_centroid = np.clip(brain_centroid, a_min=0, a_max=None)
 
-    if brain_centroid[1] > img.shape[1]:
-        brain_centroid[1] = img.shape[1]//2
-    if brain_centroid[2] > img.shape[2]:
-        brain_centroid[2] = img.shape[2]//2 
-    if brain_centroid[3] > img.shape[3]:
-        brain_centroid[3] = img.shape[3]//2
+    if brain_centroid[0] > img.shape[1]:
+        brain_centroid[0] = img.shape[1]//2
+    if brain_centroid[1] > img.shape[2]:
+        brain_centroid[1] = img.shape[2]//2 
+    if brain_centroid[2] > img.shape[3]:
+        brain_centroid[2] = img.shape[3]//2
 
     outfile_png = os.path.join(folder, f"{cid}.png")
-    outfile_npz = os.path.join(folder, f"{cid}_new.npz")
+    outfile_npz = os.path.join(folder, f"{cid}.npz")
 
     plt.figure()
 
     plt.subplot(331)
-    plt.imshow(img[0,brain_centroid[1]], cmap="gray")
+    plt.imshow(img[0,brain_centroid[0]], cmap="gray")
     plt.colorbar()
     plt.subplot(332)
-    plt.imshow(flip_dist[0,brain_centroid[1]])
+    plt.imshow(flip_dist[0,brain_centroid[0]])
     plt.colorbar()
     plt.subplot(333)
-    plt.imshow(flip_time[0,brain_centroid[1]])
+    plt.imshow(flip_time[0,brain_centroid[0]])
     plt.colorbar()
     plt.subplot(334)
-    plt.imshow(img[0,:,brain_centroid[2]], cmap="gray")
+    plt.imshow(img[0,:,brain_centroid[1]], cmap="gray")
     plt.colorbar()
     plt.subplot(335)
-    plt.imshow(flip_dist[0,:,brain_centroid[2]])
+    plt.imshow(flip_dist[0,:,brain_centroid[1]])
     plt.colorbar()
     plt.subplot(336)
-    plt.imshow(flip_time[0,:,brain_centroid[2]])
+    plt.imshow(flip_time[0,:,brain_centroid[1]])
     plt.colorbar()
     plt.subplot(337)
-    plt.imshow(img[0,:,:,brain_centroid[3]], cmap="gray")
+    plt.imshow(img[0,:,:,brain_centroid[2]], cmap="gray")
     plt.colorbar()
     plt.subplot(338)
-    plt.imshow(flip_dist[0,:,:,brain_centroid[3]])
+    plt.imshow(flip_dist[0,:,:,brain_centroid[2]])
     plt.colorbar()
     plt.subplot(339)
-    plt.imshow(flip_time[0,:,:,brain_centroid[3]])
+    plt.imshow(flip_time[0,:,:,brain_centroid[2]])
     plt.colorbar()
+    plt.suptitle(cid)
     plt.savefig(outfile_png)
     plt.show()
     plt.close()
