@@ -61,7 +61,7 @@ def process_id(cta_folder : os.PathLike, brain_folder : os.PathLike, i : str, la
         out_cta_file = os.path.join(test_folder, f"{i}_0000.nii.gz")  
         out_time_file = os.path.join(label_test_folder, f"{i}_0001.nii.gz")
         out_label_file = os.path.join(label_test_folder, f"{i}.nii.gz")
-        out_brain_file = os.path.join(brain_out_test_folder, f"{i}.nii.gz")
+        out_brain_file = os.path.join(brain_out_test_folder, f"{i}.nii.gz") 
     else:
         print(i, "train") 
 
@@ -69,8 +69,9 @@ def process_id(cta_folder : os.PathLike, brain_folder : os.PathLike, i : str, la
     # Avoid having distance information in slices where there is no CTA information 
     cta_image = sitk.ReadImage(cta_file)
     cta_img = sitk.GetArrayFromImage(cta_image)
-    cta_img[cta_img == -1024] = 0
-    sum_rows = np.sum(cta_img, axis=(1,2))
+    cta_img_copy = cta_img.copy()
+    cta_img_copy[cta_img <= -1024] = 0
+    sum_rows = np.sum(cta_img_copy, axis=(1,2))
     ind_rows = np.where(sum_rows == 0)[0]
     low_lim, high_lim = 0, cta_img.shape[0]-1
     if ind_rows.shape[0] > 0:  
