@@ -3,6 +3,7 @@ import os, sys
 import argparse
 import SimpleITK as sitk
 import matplotlib.pyplot as plt
+from nndet.core.ops_np import box_iou_np
 from typing import Union
 from scipy.spatial import cKDTree, KDTree
 from scipy.ndimage import (
@@ -649,11 +650,11 @@ def process_case(
         time_map = sitk.GetArrayFromImage(time_image)
 
         # Smooth time information
-        time_smooth, time_cc = smooth_time(
-            time_map=time_map,
-            size_thr=cfg["size_thr"],
-            median_filter_size=cfg["median_filter_size"],
-        )
+        # time_smooth, time_cc = smooth_time(
+        #    time_map=time_map,
+        #    size_thr=cfg["size_thr"],
+        #    median_filter_size=cfg["median_filter_size"],
+        # )
 
         # Load distance map information
         dist_file = os.path.join(dist_folder, f"{cid}.nii.gz")
@@ -668,6 +669,10 @@ def process_case(
         brain_centroid = np.median(brain_coords, 1)
 
         # Skeletonization
+        # skeleton, _ = skeletonization(segm=time_cc, image_ref=dist_image)
+        # Obtain connected components
+        time_mask = time_map > np.finfo(float).eps
+        time_cc, _ = label(time_mask)
         skeleton, _ = skeletonization(segm=time_cc, image_ref=dist_image)
 
         # Dilate skeleton and expand it
@@ -679,7 +684,8 @@ def process_case(
         diameter_map = skeleton * dist_map * 2
 
         # Rank time information
-        skeleton_time = skeleton * time_smooth  # Information on skeleton and time
+        # skeleton_time = skeleton * time_smooth  # Information on skeleton and time
+        skeleton_time = skeleton * time_map
         rank = derive_rank_image(img=skeleton_time)
 
         # Obtain mask with skeleton tips
@@ -704,10 +710,17 @@ def process_case(
         tp_file = os.path.join(gt_folder, f"{cid}_boxes_gt.npz")
         tp_boxes = np.load(tp_file)["boxes"]
         tp_mask = np.zeros(time_map.shape, dtype=np.uint8)
+        initial_tps = 0
         if tp_boxes.shape[0] > 0:
+
             for i in range(tp_boxes.shape[0]):
-                tp_box = tp_boxes[i]
-                tp_box = tp_box.astype(int)
+                tp_box = np.expand_dims(tp_boxes[i], 0)
+                ious = box_iou_np(tp_box, boxes)
+                ind_tps = np.where(ious >= 0.1)[0]
+                if ind_tps.shape[0] > 0:
+                    initial_tps += 1
+
+                tp_box = tp_box.squeeze().astype(int)
                 tp_mask[
                     tp_box[0] : tp_box[2],
                     tp_box[1] : tp_box[3],
@@ -771,16 +784,26 @@ def process_case(
             else:
                 tp_info.append(False)
 
+            # if (patch_tp.sum() > 0) and not (keep):
+            #    print(
+            #        cid,
+            #        (patch_tip.sum() > 0).any(),
+            #        (patch_diam.sum() > 0).any(),
+            #        time_condition,
+            #    )
+
             if (center.shape[0] > 0) and keep:
                 # Compute relative location of prediction
                 # Too high or too low positives tend to be FPs
                 box_vector = (center - brain_centroid) / skeleton.shape
-                if (box_vector[0] < -0.2) or (box_vector[0] > 0):
+
+                if (box_vector[0] < -0.3) or (box_vector[0] > 0.3):
                     keep = False
 
             if keep:
                 vol = (box[2] - box[0]) * (box[3] - box[1]) * (box[-1] - box[-2]) / 1000
-                if (vol < 3) or (vol > 130):
+
+                if (vol < 1) or (vol > 200):
                     keep = False
 
             if not (keep):
@@ -791,6 +814,19 @@ def process_case(
         keep_box = np.array(keep_box, dtype=bool)
 
         # Forensics for TP removal
+        final_tps = 0
+        if initial_tps > 0:
+            for i in range(tp_boxes.shape[0]):
+                tp_box = np.expand_dims(tp_boxes[i], 0)
+                ious = box_iou_np(tp_box, boxes[keep_box])
+                ind_tps = np.where(ious >= 0.1)[0]
+                if ind_tps.shape[0] > 0:
+                    final_tps += 1
+
+        if final_tps - initial_tps < 0:
+            print(f"{cid} : WARNING: TP(s) removed!!")
+
+        ious = box_iou_np(tp_boxes, boxes)
         tp_info = np.array(tp_info, dtype=bool)
         ind_tp = np.where(tp_info)[0]
 
