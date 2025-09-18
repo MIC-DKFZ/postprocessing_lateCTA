@@ -650,11 +650,11 @@ def process_case(
         time_map = sitk.GetArrayFromImage(time_image)
 
         # Smooth time information
-        # time_smooth, time_cc = smooth_time(
-        #    time_map=time_map,
-        #    size_thr=cfg["size_thr"],
-        #    median_filter_size=cfg["median_filter_size"],
-        # )
+        time_smooth, time_cc = smooth_time(
+            time_map=time_map,
+            size_thr=cfg["size_thr"],
+            median_filter_size=cfg["median_filter_size"],
+        )
 
         # Load distance map information
         dist_file = os.path.join(dist_folder, f"{cid}.nii.gz")
@@ -669,11 +669,11 @@ def process_case(
         brain_centroid = np.median(brain_coords, 1)
 
         # Skeletonization
-        # skeleton, _ = skeletonization(segm=time_cc, image_ref=dist_image)
-        # Obtain connected components
-        time_mask = time_map > np.finfo(float).eps
-        time_cc, _ = label(time_mask)
         skeleton, _ = skeletonization(segm=time_cc, image_ref=dist_image)
+        # Obtain connected components
+        # time_mask = time_map > np.finfo(float).eps
+        # time_cc, _ = label(time_mask)
+        # skeleton, _ = skeletonization(segm=time_cc, image_ref=dist_image)
 
         # Dilate skeleton and expand it
         if cfg["expand_skeleton"] == 1:
@@ -753,7 +753,10 @@ def process_case(
             patch_tp = tp_mask[
                 coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
             ]
-            time_patch = rank[
+            # time_patch = rank[
+            #    coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
+            # ]
+            time_patch = time_map[
                 coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
             ]
 
@@ -761,9 +764,14 @@ def process_case(
             max_time = 0.0
             if time_vals.shape[0] > 0:
                 # Get rank values
-                max_time = np.percentile(time_vals, 95)
+                # max_time = np.percentile(time_vals, 95)
+                max_time = np.percentile(time_vals, 5)
 
-            time_condition = max_time > cfg["t_low_percentile"]
+            # time_condition = max_time > cfg["t_low_percentile"]
+            time_condition = (max_time > cfg["t_low_percentile"]) & (
+                max_time < cfg["t_high_percentile"]
+            )
+
             keep = (
                 (patch_tip.sum() > 0).any()
                 & (patch_diam.sum() > 0).any()
