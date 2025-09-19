@@ -819,9 +819,9 @@ def process_case(
             if (center.shape[0] > 0) and keep:
                 # Compute relative location of prediction
                 # Too high or too low positives tend to be FPs
-                box_vector = (center_physical - brain_centroid_physical) / (
-                    brain_size + np.finfo(float).eps
-                )
+                box_vector = (
+                    np.array(center_physical) - np.array(brain_centroid_physical)
+                ) / (brain_size + np.finfo(float).eps)
 
                 print(box_vector[0], box_vector[1], patch_tp.sum() > 0)
 
