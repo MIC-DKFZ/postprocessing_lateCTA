@@ -606,6 +606,7 @@ def process_case(
     cfg: dict,
     pred_folder: os.PathLike,
     segm_folder: os.PathLike,
+    brain_folder: os.PathLike,
     dist_folder: os.PathLike,
     out_folder: os.PathLike,
     gt_folder: os.PathLike,
@@ -664,9 +665,21 @@ def process_case(
         dist_image = sitk.ReadImage(dist_file)
         dist_map = sitk.GetArrayFromImage(dist_image)
 
-        # Determine brain mask: place where distance map is non-maximum
-        brain_coords = np.array(np.where(dist_map < dist_map.max()))
-        brain_centroid = np.median(brain_coords, 1)
+        # Determine brain mask and centroid
+        brain_file = os.path.join(brain_folder, f"{cid}.nii.gz")
+        brain_image = sitk.ReadImage(brain_file)
+        spacing = np.array(brain_image.GetSpacing())
+        brain_segm = sitk.GetArrayFromImage(brain_image)
+        brain_coords = np.argwhere(brain_segm > 0)
+        brain_centroid = brain_coords.mean(axis=0).astype(int)
+        brain_centroid_physical = brain_image.TransformContinuousIndexToPhysicalPoint(
+            brain_centroid.tolist()
+        )
+
+        # Derive size of bounding box surrounding brain
+        min_coords = np.min(brain_coords, 0)
+        max_coords = np.max(brain_coords, 0)
+        brain_size = (max_coords - min_coords) * spacing
 
         # Skeletonization
         skeleton, _ = skeletonization(segm=time_cc, image_ref=dist_image)
@@ -686,7 +699,7 @@ def process_case(
         # Rank time information
         # skeleton_time = skeleton * time_smooth  # Information on skeleton and time
         skeleton_time = skeleton * time_map
-        rank = derive_rank_image(img=skeleton_time)
+        # rank = derive_rank_image(img=skeleton_time)
 
         # Obtain mask with skeleton tips
         tips = find_endpoints(skeleton=skeleton)
@@ -743,6 +756,9 @@ def process_case(
                     ]
                 )
                 // 2
+            )
+            center_physical = brain_image.TransformContinuousIndexToPhysicalPoint(
+                center.tolist()
             )
             patch_tip = tip_mask[
                 coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
@@ -803,9 +819,18 @@ def process_case(
             if (center.shape[0] > 0) and keep:
                 # Compute relative location of prediction
                 # Too high or too low positives tend to be FPs
-                box_vector = (center - brain_centroid) / skeleton.shape
+                box_vector = (center_physical - brain_centroid_physical) / (
+                    brain_size + np.finfo(float).eps
+                )
 
-                if (box_vector[0] < -0.3) or (box_vector[0] > 0.3):
+                print(box_vector[0], box_vector[1], patch_tp.sum() > 0)
+
+                if (
+                    (box_vector[0] < -0.3)
+                    or (box_vector[0] > 0.1)
+                    or (box_vector[1] < -0.35)
+                    or (box_vector[1] > 0.0)
+                ):
                     keep = False
 
             if keep:
@@ -935,6 +960,7 @@ def main(args):
     segm_folder = args.segm
     dist_folder = args.dist
     out_folder = args.out
+    brain_folder = args.brain
     gt_folder = args.ref
 
     assert os.path.exists(
@@ -943,6 +969,7 @@ def main(args):
     assert os.path.exists(
         gt_folder
     ), f"Ground-truth folder '{gt_folder}' does not exist"
+    assert os.path.exists(brain_folder), f"Brain folder '{brain_folder}' does not exist"
     assert os.path.exists(
         segm_folder
     ), f"Segmentation folder '{segm_folder}' does not exist"
@@ -965,7 +992,14 @@ def main(args):
     files = sorted(os.listdir(pred_folder))
     Parallel(n_jobs=cfg["workers"])(
         delayed(process_case)(
-            file, cfg, pred_folder, segm_folder, dist_folder, out_folder, gt_folder
+            file,
+            cfg,
+            pred_folder,
+            segm_folder,
+            brain_folder,
+            dist_folder,
+            out_folder,
+            gt_folder,
         )
         for file in files
         if ".pkl" in file
@@ -978,6 +1012,7 @@ def get_args():
     parser.add_argument("--pred", help="Prediction folder", type=str)
     parser.add_argument("--dist", help="Distance map folder", type=str)
     parser.add_argument("--segm", help="Time map folder", type=str)
+    parser.add_argument("--brain", help="Brain folder", type=str)
     parser.add_argument("--out", help="Output folder with FPR", type=str)
     parser.add_argument("--ref", help="Ground-truth folder", type=str)
     args = parser.parse_args()
