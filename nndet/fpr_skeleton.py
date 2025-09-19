@@ -823,8 +823,6 @@ def process_case(
                     np.array(center_physical) - np.array(brain_centroid_physical)
                 ) / (brain_size + np.finfo(float).eps)
 
-                print(box_vector[0], box_vector[1], patch_tp.sum() > 0)
-
                 if (
                     (box_vector[0] < -0.3)
                     or (box_vector[0] > 0.1)
