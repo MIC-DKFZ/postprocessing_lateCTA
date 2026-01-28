@@ -30,7 +30,7 @@ def plot_metrics_boxplots(data, title: str = "", outfile: str = ""):
     """
 
     methods = list(data.keys())
-    metrics = [m for m in data[methods[0]].keys() if m != "FP per image"]
+    metrics = [m for m in data[methods[0]].keys() if m != "False occlusions per scan"]
 
     n_methods = len(methods)
     n_metrics = len(metrics)
@@ -93,13 +93,13 @@ def plot_metrics_boxplots(data, title: str = "", outfile: str = ""):
 
             pos = median_val + 0.001
             # if metric == "AUROC" or metric == "Case specificity":
-            if metric == "Box precision":
+            if metric == "Occlusion precision":
                 pos = s[-1] + 0.001
 
             ax.text(
                 x_pos,
                 pos,
-                f"{median_val:.3f}",
+                f"{median_val:.2f}",
                 ha="center",
                 va="bottom",
                 fontsize=14,
@@ -118,21 +118,21 @@ def plot_metrics_boxplots(data, title: str = "", outfile: str = ""):
             )
 
     # Labels
-    ax.set_ylabel("Metric Value")
+    # ax.set_ylabel("Metric Value")
     ax.set_title(title)
 
     # Legend
     method_handles = [Line2D([0], [0], color=colors[i], lw=5) for i in range(n_methods)]
     # method_labels = [
-    #    f"{method}\n(FP per image={data[method]['FP per image']:.3f})"
+    #    f"{method}\n(FP per image={data[method]['FP per image']:.2f})"
     #    for method in methods
     # ]
 
     method_labels = [
         (
-            f"{method}\n(FP per image={data[method]['FP per image']:.3f})\n"
+            f"{method}\n(False occlusions\nper scan={data[method]['False occlusions per scan']:.2f})\n"
             if method == "Baseline"
-            else f"False positive\nreduction\n(FP per image={data[method]['FP per image']:.3f})\n"
+            else f"False occlusion\nremoval\n(False occlusions\nper scan={data[method]['False occlusions per scan']:.2f})\n"
         )
         for method in methods
     ]
