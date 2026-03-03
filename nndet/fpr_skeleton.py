@@ -827,7 +827,7 @@ def process_case(
                     (box_vector[0] < -0.3)
                     or (box_vector[0] > 0.1)
                     or (box_vector[1] < -0.35)
-                    or (box_vector[1] > 0.0)
+                    or (box_vector[1] > 0.1)
                 ):
                     keep = False
 

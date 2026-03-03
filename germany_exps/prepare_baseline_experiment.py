@@ -57,6 +57,7 @@ def process_id(
     label_folder: os.PathLike,
     out_img_folder: os.PathLike,
     out_label_folder: os.PathLike,
+    out_brain_folder: os.PathLike,
     brain_folder: os.PathLike,
     df_label: pd.DataFrame,
     df_phase: pd.DataFrame,
@@ -76,6 +77,7 @@ def process_id(
     label_folder : input label folder
     out_img_folder : output image folder
     out_label_folder : output label folder
+    out_brain_folder : output brain folder
     brain_folder : TotalSegmentator brain folder
     df_label : label information
     df_phase : phase information
@@ -90,15 +92,20 @@ def process_id(
     cid_num = str(int(cid_zeros))
 
     # derive output file
-    outfile_img = os.path.join(out_img_folder, f"{out_cid}_0000.nii.gz")
-    outfile_label = os.path.join(out_label_folder, f"{out_cid}.nii.gz")
+    outfile_img = os.path.join(out_img_folder, f"{cid}_0000.nii.gz")
+    outfile_label = os.path.join(out_label_folder, f"{cid}.nii.gz")
+    outfile_brain = os.path.join(out_brain_folder, f"{cid}.nii.gz")
 
     label_ind = df_label.index.values.astype(str).tolist()
     phase_ind = df_phase.index.values.astype(str).tolist()
 
-    if not (os.path.exists(outfile_img)) and not (os.path.exists(outfile_label)):
+    if (
+        not (os.path.exists(outfile_img))
+        or not (os.path.exists(outfile_label))
+        or not (os.path.exists(outfile_brain))
+    ):
         # Skip already processed cases
-        print(out_cid)
+        # print(out_cid)
         # Check if case contains extracranial label
         extracranial = [
             "Carotis_T_R",
@@ -123,16 +130,15 @@ def process_id(
             if not (extracranial_label):
                 skip = False
                 if (cohort == "ukb") or (cohort == "fast"):
-                    # Skip external dataset cases that are venous
                     # Determine phase
                     if cid_num in phase_ind:
                         phase_info = df_phase.loc[int(cid_num)]
                         phase = phase_info["Phase"]
-                        if "arterial" in phase:
-                            skip = True
-                            print(
-                                f"External CID in arterial phase: {out_cid}, skipping..."
-                            )
+                        # if "arterial" in phase:
+                        #    skip = True
+                        #    print(
+                        #        f"External CID in arterial phase: {out_cid}, skipping..."
+                        #    )
                     else:
                         skip = True
 
@@ -141,6 +147,9 @@ def process_id(
                     input_file = os.path.join(img_folder, i)
                     label_file = os.path.join(label_folder, f"{cid}.nii.gz")
                     brain_file = os.path.join(brain_folder, f"{out_cid}.nii.gz")
+
+                    if not (os.path.exists(brain_file)):
+                        brain_file = os.path.join(brain_folder, f"{cid}.nii.gz")
 
                     # Derive images
                     input_image = sitk.ReadImage(input_file)
@@ -154,27 +163,32 @@ def process_id(
                             # Clip volumes to brain slices
                             out_img = input_img[low_lim:high_lim]
                             out_label = label_img[low_lim:high_lim]
+                            out_brain = brain_img[low_lim:high_lim]
                         else:
                             out_img = input_img.copy()
                             out_label = label_img.copy()
+                            out_brain = brain_img.copy()
                     else:
                         print(f"Non-existing brain segmentation for {out_cid}")
                         out_img = input_img.copy()
                         out_label = label_img.copy()
+                        out_brain = brain_img.copy()
 
                     # Save output images and labels
                     save_image(arr=out_img, ref_image=input_image, outfile=outfile_img)
                     save_image(
                         arr=out_label, ref_image=input_image, outfile=outfile_label
                     )
-
+                    save_image(
+                        arr=out_brain, ref_image=input_image, outfile=outfile_brain
+                    )
                     # Save .json label files
                     json_file = os.path.join(label_folder, f"{cid}.json")
-                    out_json_file = os.path.join(out_label_folder, f"{out_cid}.json")
+                    out_json_file = os.path.join(out_label_folder, f"{cid}.json")
                     shutil.copyfile(json_file, out_json_file)
 
             else:
-                print(f"{out_cid} presents an extracranial label, skipping...")
+                print(f"{cid} presents an extracranial label, skipping...")
 
 
 def process_cohort(
@@ -201,11 +215,13 @@ def process_cohort(
         # Save results in imagesTr and labelsTr
         out_img_folder = os.path.join(outfolder, "raw_splitted", "imagesTr")
         out_label_folder = os.path.join(outfolder, "raw_splitted", "labelsTr")
+        out_brain_folder = os.path.join(outfolder, "raw_splitted", "brainTr")
         tag = ""  # Tag to add to each case processed
     else:
         # Save results in imagesTs and labelsTs
         out_img_folder = os.path.join(outfolder, "raw_splitted", "imagesTs")
         out_label_folder = os.path.join(outfolder, "raw_splitted", "labelsTs")
+        out_brain_folder = os.path.join(outfolder, "raw_splitted", "brainTs")
         tag = "" + cohort + "_"  # Tag to add to each case processed
 
     if not (os.path.exists(out_img_folder)):
@@ -213,6 +229,9 @@ def process_cohort(
 
     if not (os.path.exists(out_label_folder)):
         os.makedirs(out_label_folder)
+
+    if not (os.path.exists(out_brain_folder)):
+        os.makedirs(out_brain_folder)
 
     # Load label file
     label_df = pd.read_excel(df_info["label_file"])
@@ -244,6 +263,7 @@ def process_cohort(
                 label_folder[enum_i],
                 out_img_folder,
                 out_label_folder,
+                out_brain_folder,
                 brain_folder,
                 label_df,
                 df_phase,

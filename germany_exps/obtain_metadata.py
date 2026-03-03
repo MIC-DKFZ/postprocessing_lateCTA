@@ -32,7 +32,7 @@ def process_file(file, folder, key, df=None):
 
         age = int(df_info["age_calculated"])
         sex = str(df_info["sex"]).lower()
-        sex = "w" if sex == "f" else "m"
+        sex = "w" if sex.lower().strip() == "f" or sex.lower().strip() == "w" else "m"
 
         if key == "STROKE":
             loc = "Heidelberg"
