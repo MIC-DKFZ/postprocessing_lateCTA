@@ -4,6 +4,7 @@ import argparse
 import SimpleITK as sitk
 import matplotlib.pyplot as plt
 from nndet.core.ops_np import box_iou_np
+from skimage.morphology import skeletonize_3d
 from typing import Union
 from scipy.spatial import cKDTree, KDTree
 from scipy.ndimage import (
@@ -42,6 +43,9 @@ def find_endpoints(skeleton: np.ndarray) -> np.ndarray:
     kernel[1, 1, 1] = 0
     neighbor_count = convolve(skeleton.astype(int), kernel, mode="constant")
     endpoints = (skeleton == 1) & (neighbor_count == 1)
+    branches = (skeleton == 1) & (neighbor_count >= 3)
+
+    endpoints = np.logical_or(endpoints, branches)
     return np.argwhere(endpoints)
 
 
@@ -219,7 +223,7 @@ def distance2segm(dist_map: np.ndarray, cfg: dict) -> np.ndarray:
     return segm
 
 
-def skeletonization(segm: np.ndarray, image_ref) -> np.ndarray:
+def skeletonization(segm: np.ndarray) -> np.ndarray:
     """
     Skeletonize from distance map
 
@@ -234,13 +238,14 @@ def skeletonization(segm: np.ndarray, image_ref) -> np.ndarray:
     skeleton_image : SimpleITK skeleton image
 
     """
-    segm_image = sitk.GetImageFromArray(segm)
-    segm_image.CopyInformation(image_ref)
-    segm_image = sitk.Cast(segm_image, sitk.sitkUInt8)
-    skeleton_image = sitk.BinaryThinning(segm_image)
-    skeleton = sitk.GetArrayFromImage(skeleton_image)
+    # segm_image = sitk.GetImageFromArray(segm)
+    # segm_image.CopyInformation(image_ref)
+    # segm_image = sitk.Cast(segm_image, sitk.sitkUInt8)
+    # skeleton_image = sitk.BinaryThinning(segm_image)
+    # skeleton = sitk.GetArrayFromImage(skeleton_image)
+    skeleton = skeletonize_3d(segm)
 
-    return skeleton, skeleton_image
+    return skeleton
 
 
 def dilate_skeleton(skeleton: np.ndarray):
@@ -607,7 +612,6 @@ def process_case(
     pred_folder: os.PathLike,
     segm_folder: os.PathLike,
     brain_folder: os.PathLike,
-    dist_folder: os.PathLike,
     out_folder: os.PathLike,
     gt_folder: os.PathLike,
 ):
@@ -651,24 +655,24 @@ def process_case(
         time_map = sitk.GetArrayFromImage(time_image)
 
         # Smooth time information
-        time_smooth, time_cc = smooth_time(
-            time_map=time_map,
-            size_thr=cfg["size_thr"],
-            median_filter_size=cfg["median_filter_size"],
-        )
+        # time_smooth, time_cc = smooth_time(
+        #    time_map=time_map,
+        #    size_thr=cfg["size_thr"],
+        #    median_filter_size=cfg["median_filter_size"],
+        # )
 
         # Load distance map information
-        dist_file = os.path.join(dist_folder, f"{cid}.nii.gz")
-        assert os.path.exists(
-            dist_file
-        ), f"Distance map file '{dist_file}' does not exist"
-        dist_image = sitk.ReadImage(dist_file)
-        dist_map = sitk.GetArrayFromImage(dist_image)
+        # dist_file = os.path.join(dist_folder, f"{cid}.nii.gz")
+        # assert os.path.exists(
+        #    dist_file
+        # ), f"Distance map file '{dist_file}' does not exist"
+        # dist_image = sitk.ReadImage(dist_file)
+        # dist_map = sitk.GetArrayFromImage(dist_image)
 
         # Determine brain mask and centroid
         brain_file = os.path.join(brain_folder, f"{cid}.nii.gz")
         brain_image = sitk.ReadImage(brain_file)
-        spacing = np.array(brain_image.GetSpacing())
+        spacing = np.flip(np.array(brain_image.GetSpacing()))
         brain_segm = sitk.GetArrayFromImage(brain_image)
         brain_coords = np.argwhere(brain_segm > 0)
         brain_centroid = brain_coords.mean(axis=0).astype(int)
@@ -682,7 +686,7 @@ def process_case(
         brain_size = (max_coords - min_coords) * spacing
 
         # Skeletonization
-        skeleton, _ = skeletonization(segm=time_cc, image_ref=dist_image)
+        skeleton = skeletonization(segm=time_map)
         # Obtain connected components
         # time_mask = time_map > np.finfo(float).eps
         # time_cc, _ = label(time_mask)
@@ -691,14 +695,14 @@ def process_case(
         # Dilate skeleton and expand it
         if cfg["expand_skeleton"] == 1:
             dilated_skeleton = dilate_skeleton(skeleton=skeleton)
-            skeleton, _ = skeletonization(segm=dilated_skeleton, image_ref=dist_image)
+            skeleton = skeletonization(segm=dilated_skeleton)
 
         # Obtain diameter of skeleton
-        diameter_map = skeleton * dist_map * 2
+        # diameter_map = skeleton * dist_map * 2
 
         # Rank time information
         # skeleton_time = skeleton * time_smooth  # Information on skeleton and time
-        skeleton_time = skeleton * time_map
+        # skeleton_time = skeleton * time_map
         # rank = derive_rank_image(img=skeleton_time)
 
         # Obtain mask with skeleton tips
@@ -709,13 +713,13 @@ def process_case(
 
         # Obtain mask with low diameter values
         # Minimum diameter found in foreground
-        diameter_map = -diameter_map
-        minimum_diam = np.percentile(
-            diameter_map[diameter_map > 0], cfg["perc_min_diameter"]
-        )
-        low_diam_img = ((diameter_map > 0) & (diameter_map <= minimum_diam)).astype(
-            np.uint8
-        )
+        # diameter_map = -diameter_map
+        # minimum_diam = np.percentile(
+        #    diameter_map[diameter_map > 0], cfg["perc_min_diameter"]
+        # )
+        # low_diam_img = ((diameter_map > 0) & (diameter_map <= minimum_diam)).astype(
+        #    np.uint8
+        # )
 
         keep_box = []
 
@@ -763,9 +767,9 @@ def process_case(
             patch_tip = tip_mask[
                 coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
             ]
-            patch_diam = low_diam_img[
-                coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
-            ]
+            # patch_diam = low_diam_img[
+            #    coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
+            # ]
             patch_tp = tp_mask[
                 coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
             ]
@@ -788,19 +792,21 @@ def process_case(
                 max_time < cfg["t_high_percentile"]
             )
 
-            keep = (
-                (patch_tip.sum() > 0).any()
-                & (patch_diam.sum() > 0).any()
-                & time_condition
-            )
+            # keep = (
+            #    (patch_tip.sum() > 0).any()
+            #    & (patch_diam.sum() > 0).any()
+            #    & time_condition
+            # )
+
+            keep = (patch_tip.sum() > 0).any() & time_condition
 
             # Determine causes for the removal of a positive
             empty_tip = (patch_tip.sum() == 0).all()
-            empty_low_diam = (patch_diam.sum() == 0).all()
+            # empty_low_diam = (patch_diam.sum() == 0).all()
             empty_rank = not (time_condition)
 
             no_tip.append(empty_tip)
-            no_lowdiam.append(empty_low_diam)
+            # no_lowdiam.append(empty_low_diam)
             no_rank.append(empty_rank)
 
             if patch_tp.sum() > 0:
@@ -956,7 +962,7 @@ def filter_out_fps(
 def main(args):
     pred_folder = args.pred
     segm_folder = args.segm
-    dist_folder = args.dist
+    # dist_folder = args.dist
     out_folder = args.out
     brain_folder = args.brain
     gt_folder = args.ref
@@ -971,9 +977,9 @@ def main(args):
     assert os.path.exists(
         segm_folder
     ), f"Segmentation folder '{segm_folder}' does not exist"
-    assert os.path.exists(
-        dist_folder
-    ), f"Distance map folder '{dist_folder}' does not exist"
+    # assert os.path.exists(
+    #    dist_folder
+    # ), f"Distance map folder '{dist_folder}' does not exist"
     assert os.path.exists(
         os.path.dirname(out_folder)
     ), f"Parent output folder '{out_folder}' does not exist"
@@ -995,7 +1001,6 @@ def main(args):
             pred_folder,
             segm_folder,
             brain_folder,
-            dist_folder,
             out_folder,
             gt_folder,
         )
@@ -1008,7 +1013,7 @@ def get_args():
     # Remove predictions outside of lately enhanced regions
     parser = argparse.ArgumentParser()
     parser.add_argument("--pred", help="Prediction folder", type=str)
-    parser.add_argument("--dist", help="Distance map folder", type=str)
+    # parser.add_argument("--dist", help="Distance map folder", type=str)
     parser.add_argument("--segm", help="Time map folder", type=str)
     parser.add_argument("--brain", help="Brain folder", type=str)
     parser.add_argument("--out", help="Output folder with FPR", type=str)

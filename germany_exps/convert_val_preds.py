@@ -3,8 +3,8 @@ import numpy as np
 import time
 import argparse
 from joblib import Parallel, delayed
+from skimage.morphology import skeletonize_3d
 from batchgenerators.utilities.file_and_folder_operations import load_json
-from nndet.io.load import load_pickle
 import SimpleITK as sitk
 from scipy.ndimage import (
     convolve,
@@ -12,54 +12,64 @@ from scipy.ndimage import (
     generate_binary_structure,
     median_filter,
     label,
+    distance_transform_edt,
+    maximum_filter,
 )
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
 from scipy.spatial import cKDTree
 import h5py
 from typing import Union
+from nndet.io.load import load_pickle
+from nndet.core.ops_np import box_iou_np
+import skfmm
+from scipy.spatial.distance import cdist
 
 
-def find_endpoints(skeleton: np.ndarray) -> np.ndarray:
+def extract_skeleton_break_candidates(
+    segm: np.ndarray,
+) -> np.ndarray:
     """
-    Find skeleton endpoints
+    Extract vessel skeleton break candidates in voxel (image) space.
 
-    Params
-    ------
-    skeleton : input skeleton where to find endpoints
+    Parameters
+    ----------
+    segm : np.ndarray
+        Binary vessel segmentation (ZYX).
+    distance_map : np.ndarray
+        Distance transform of segmentation (same shape as segm, in voxels).
+    radius_thr_vox : float
+        Minimum vessel radius (in voxels) to consider endpoint valid.
+    max_pair_dist_vox : float
+        Maximum distance (in voxels) between two endpoints to form a break.
 
     Returns
     -------
-    endpoints : coordinates with endpoints
-
+    break_points_vox : np.ndarray (N, 3)
+        Break candidate coordinates in voxel space (ZYX).
     """
-    kernel = np.ones((3, 3, 3))
+
+    # 1️⃣ Skeletonize in 3D
+    skeleton = skeletonize_3d(segm.astype(bool))
+    # skeleton = skeleton_from_distance(segm.astype(bool))
+    # dilated_skeleton = dilate_skeleton(skeleton)
+    # skeleton = skeleton_from_distance(dilated_skeleton)
+    # skeleton = skeletonize_3d(dilated_skeleton.astype(bool))
+
+    # Detect endpoints using 26-neighborhood
+    kernel = np.ones((3, 3, 3), dtype=np.uint8)
     kernel[1, 1, 1] = 0
-    neighbor_count = convolve(skeleton.astype(int), kernel, mode="constant")
+    neighbor_count = convolve(skeleton.astype(np.uint8), kernel, mode="constant")
     endpoints = (skeleton == 1) & (neighbor_count == 1)
-    return np.argwhere(endpoints)
+    branches = (skeleton == 1) & (neighbor_count >= 3)
 
+    endpoints = np.logical_or(endpoints, branches)
 
-def skeletonization(segm: np.ndarray, image_ref) -> np.ndarray:
-    """
-    Skeletonize from distance map
+    endpoint_vox = np.argwhere(endpoints)
+    if len(endpoint_vox) < 2:
+        return np.empty((0, 3), dtype=float)
 
-    Params
-    ------
-    segm : segmentation
-    image_ref : reference SimpleITK image
-
-    Returns
-    -------
-    skeleton : skeleton
-    skeleton_image : SimpleITK skeleton image
-
-    """
-    segm_image = sitk.GetImageFromArray(segm)
-    segm_image.CopyInformation(image_ref)
-    segm_image = sitk.Cast(segm_image, sitk.sitkUInt8)
-    skeleton_image = sitk.BinaryThinning(segm_image)
-    skeleton = sitk.GetArrayFromImage(skeleton_image)
-
-    return skeleton, skeleton_image
+    return np.vstack(endpoint_vox)
 
 
 def dilate_skeleton(skeleton: np.ndarray):
@@ -121,7 +131,7 @@ def process_box(
     box: np.ndarray,
     tta: np.ndarray,
     centroid: list,
-    tips: np.ndarray,
+    tree: np.ndarray,
     brain_image,
     brain_size: tuple,
 ):
@@ -149,7 +159,6 @@ def process_box(
     patch = derive_patch_coords(box=box, shape=tta.shape)
 
     # Obtain distance to tips
-    tree = cKDTree(tips)
     d, _ = tree.query(center)
 
     # Obtain time values
@@ -230,12 +239,6 @@ def smooth_time(
             smoothed[label_time == l] = time_map[label_time == l]
             label_mask[label_time == l] = l
 
-    # smoothed_mask = (smoothed > 0).astype(int)
-
-    # Apply median filter to time image
-    # smoothed = apply_masked_median_filter(image=smoothed,
-    #                                       mask=smoothed_mask,
-    #                                       size=median_filter_size)
     smoothed = median_filter(input=smoothed, size=median_filter_size)
 
     return smoothed, label_mask
@@ -247,7 +250,7 @@ def process_case(
     brainfolder: os.PathLike,
     thr: float,
     file: os.PathLike,
-    workers: int = 4,
+    gt: np.ndarray,
 ):
     """
     Process case
@@ -259,6 +262,7 @@ def process_case(
     brainfolder : brain segmentation folder
     thr : confidence threshold
     file : prediction file
+    gt : ground-truth box coordinates
     workers : number of parallel workers
 
     """
@@ -278,18 +282,23 @@ def process_case(
         np.array([]),
         np.array([]),
     )
+    pred["tp"] = np.array([])
 
     # Discard boxes based on scores
     if boxes.shape[0] > 0:
         ind = np.where(scores >= thr)[0]
-        if ind.shape[0]:
+        if ind.shape[0] > 0:
             boxes, scores, labels = boxes[ind], scores[ind], labels[ind]
+            pred["pred_boxes"], pred["pred_scores"], pred["pred_labels"] = (
+                boxes,
+                scores,
+                labels,
+            )
 
-        if boxes.shape[0] > 0:
             # Load brain segmentation
             brainfile = os.path.join(brainfolder, f"{cid}.nii.gz")
             brain_image = sitk.ReadImage(brainfile)
-            spacing = np.array(brain_image.GetSpacing())
+            spacing = np.flip(np.array(brain_image.GetSpacing()))
             brain_segm = sitk.GetArrayFromImage(brain_image)
             brain_coords = np.argwhere(brain_segm > 0)
             brain_centroid = brain_coords.mean(axis=0).astype(int)
@@ -298,6 +307,7 @@ def process_case(
                     brain_centroid.tolist()
                 )
             )
+
             # Derive size of bounding box surrounding brain
             min_coords = np.min(brain_coords, 0)
             max_coords = np.max(brain_coords, 0)
@@ -308,31 +318,19 @@ def process_case(
 
             tta_image = sitk.ReadImage(time_file)
             tta = sitk.GetArrayFromImage(tta_image)
-            time_smooth, time_cc = smooth_time(
-                time_map=tta,
-                size_thr=1000,
-                median_filter_size=5,
-            )
 
             # Convert time-vessel map into skeleton and obtain endpoints
-            skeleton, _ = skeletonization(segm=time_cc, image_ref=tta_image)
-            dilated_skeleton = dilate_skeleton(skeleton=skeleton)
-            # Overdilate skeleton
-            skeleton, _ = skeletonization(segm=dilated_skeleton, image_ref=tta_image)
-            # Extract tips
-            tips = find_endpoints(skeleton=skeleton)
+            tips = extract_skeleton_break_candidates(segm=tta)
+            tree = cKDTree(tips)  # Extract tree for distance computations
+
             # iterate through boxes
-            data = Parallel(n_jobs=workers)(
-                delayed(process_box)(
-                    box,
-                    time_smooth,
-                    brain_centroid_physical,
-                    tips,
-                    brain_image,
-                    brain_size,
+            data = [
+                process_box(
+                    box, tta, brain_centroid_physical, tree, brain_image, brain_size
                 )
                 for box in boxes
-            )
+            ]
+
             data = np.array(data)
             pred["dists"], pred["times"], pred["posterior"] = (
                 np.array(data[:, 0]),
@@ -340,99 +338,163 @@ def process_case(
                 np.array(data[:, 2]),
             )
 
+            # Gather true positive labels
+            iou = box_iou_np(boxes, gt)
+            tp_inds = np.where(iou >= 0.10)[0]
+            tps = np.zeros(boxes.shape[0])
+            tps[tp_inds] = 1
+            pred["tp"] = tps
+
     return {cid: pred}
 
 
-def main(args):
-    predfolder = args.p
-    timefolder = args.t
-    thr_file = args.thr
-    workers = args.np
-    outfile = args.o
-    gtfolder = args.g
-    brainfolder = args.b
+def process_single_case(args_tuple):
+    """
+    Worker function for multiprocessing.
+    Must be top-level (pickle requirement).
+    """
+    (
+        file,
+        gtfolder,
+        predfolder,
+        timefolder,
+        brainfolder,
+        thr,
+    ) = args_tuple
 
-    assert os.path.exists(
-        predfolder
-    ), f"Prediction folder '{predfolder}' does not exist"
-    assert os.path.exists(
-        timefolder
-    ), f"Time vessel map folder '{timefolder}' does not exist"
-    assert os.path.exists(thr_file), f"Threshold file '{thr_file}' does not exist"
-    assert os.path.exists(brainfolder), f"Brain folder '{brainfolder}' does not exist"
-    assert os.path.exists(gtfolder), f"Ground truth folder '{gtfolder}' does not exist"
-    assert os.path.exists(os.path.dirname(outfile)) and outfile.endswith(
-        ".h5"
-    ), f"Parent output directory '{os.path.dirname(outfile)}' does not exist or is not .h5"
-    assert workers > 0, "Zero or negative number of parallel workers"
+    try:
+        if not file.endswith(".pkl"):
+            return None
 
-    # Threshold file loading
-    thr = load_json(thr_file)["thr_box"]
+        cid = file.replace("_boxes.pkl", "")
 
-    # Set up files
-    files = sorted(os.listdir(predfolder))
-    with h5py.File(outfile, "w") as f:
-        for file in files:
-            if file.endswith(".pkl"):
-                cid = file.replace("_boxes.pkl", "")
-                # Load ground truth file
-                gt_file = os.path.join(gtfolder, f"{cid}_boxes_gt.npz")
-                gt = np.load(gt_file, allow_pickle=True)["boxes"]
-                group = f.create_group(cid)
+        # Load GT
+        gt_file = os.path.join(gtfolder, f"{cid}_boxes_gt.npz")
+        gt = np.load(gt_file, allow_pickle=True)["boxes"]
 
-                # Store values of distances, times and posterior locations for all predicted boxes
-                # with a score over the optimal one
-                d = process_case(
-                    predfolder=predfolder,
-                    timefolder=timefolder,
-                    brainfolder=brainfolder,
-                    thr=thr,
-                    file=file,
-                    workers=workers,
-                )
-                preds = list(d.values())[0]
-                print(cid, d)
-                group.create_dataset(
-                    "pred_boxes",
-                    data=preds["pred_boxes"],
-                    compression="gzip",
-                    compression_opts=4,
-                    chunks=True,
-                )
-                group.create_dataset(
-                    "pred_scores", data=preds["pred_scores"], compression="gzip"
-                )
-                group.create_dataset(
-                    "pred_labels", data=preds["pred_labels"], compression="gzip"
-                )
-                group.create_dataset(
-                    "pred_dists", data=preds["dists"], compression="gzip"
-                )
-                group.create_dataset(
-                    "pred_times", data=preds["times"], compression="gzip"
-                )
-                group.create_dataset(
-                    "pred_posterior", data=preds["posterior"], compression="gzip"
-                )
-                group.create_dataset("gt_boxes", data=gt, compression="gzip")
+        # Run heavy processing
+        d = process_case(
+            predfolder=predfolder,
+            timefolder=timefolder,
+            brainfolder=brainfolder,
+            thr=thr,
+            file=file,
+            gt=gt,
+        )
+        preds = list(d.values())[0]
+
+        return cid, preds, gt
+
+    except Exception as e:
+        print(f"[ERROR] Failed case {file}: {e}")
+        return None
 
 
-def get_args():
-    # Obtain prediction fingerprint based on false occlusion removal rules
-    parser = argparse.ArgumentParser(description="Obtain prediction fingerprint")
-    parser.add_argument("--p", help="Prediction folder", required=True, type=str)
-    parser.add_argument("--t", help="Time vessel map folder", required=True, type=str)
-    parser.add_argument("--thr", help="Threshold file", required=True, type=str)
-    parser.add_argument("--o", help="Output file", required=True, type=str)
-    parser.add_argument("--b", help="Brain folder", required=True, type=str)
-    parser.add_argument("--g", help="Ground truth folder", required=True, type=str)
-    parser.add_argument("--np", help="Number of parallel workers", default=4, type=int)
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--p", required=True)
+    parser.add_argument("--t", required=True)
+    parser.add_argument("--b", required=True)
+    parser.add_argument("--g", required=True)
+    parser.add_argument("--o", required=True)
+    parser.add_argument("--thr", required=True)
+    parser.add_argument("--np", type=int, default=os.cpu_count())
 
     args = parser.parse_args()
-    return args
+
+    files = sorted(os.listdir(args.p))
+
+    # load threshold file
+    thr = load_json(args.thr)["thr_box"]
+
+    # Prepare arguments for workers
+    worker_args = [
+        (
+            file,
+            args.g,
+            args.p,
+            args.t,
+            args.b,
+            thr,
+        )
+        for file in files
+        if file.endswith(".pkl")
+    ]
+
+    results = []
+
+    print(f"Processing {len(worker_args)} cases with {args.np} workers...\n")
+
+    # -----------------------------
+    # Parallel Processing
+    # -----------------------------
+    with ProcessPoolExecutor(max_workers=args.np) as executor:
+        futures = [executor.submit(process_single_case, wa) for wa in worker_args]
+
+        for f in tqdm(as_completed(futures), total=len(futures)):
+            res = f.result()
+            if res is not None:
+                results.append(res)
+
+    print(f"\nFinished processing. Writing HDF5 file...\n")
+
+    # -----------------------------
+    # Sequential HDF5 Writing
+    # -----------------------------
+    with h5py.File(args.o, "w") as f:
+        for cid, preds, gt in results:
+
+            group = f.create_group(cid)
+
+            group.create_dataset(
+                "pred_boxes",
+                data=preds["pred_boxes"],
+                compression="gzip",
+                compression_opts=4,
+                chunks=True,
+            )
+            group.create_dataset(
+                "pred_scores",
+                data=preds["pred_scores"],
+                compression="gzip",
+            )
+            group.create_dataset(
+                "pred_labels",
+                data=preds["pred_labels"],
+                compression="gzip",
+            )
+            group.create_dataset(
+                "pred_dists",
+                data=preds["dists"],
+                compression="gzip",
+            )
+            group.create_dataset(
+                "pred_times",
+                data=preds["times"],
+                compression="gzip",
+            )
+            group.create_dataset(
+                "pred_posterior",
+                data=preds["posterior"],
+                compression="gzip",
+            )
+            group.create_dataset(
+                "tp",
+                data=preds["tp"],
+                compression="gzip",
+            )
+            group.create_dataset(
+                "gt_boxes",
+                data=gt,
+                compression="gzip",
+            )
+
+    print("\nDone.")
 
 
+# --------------------------------------------------
 if __name__ == "__main__":
-    t1 = time.time()
-    main(get_args())
-    print(f"Time ellapsed: {time.time()-t1}sec")
+    main()
