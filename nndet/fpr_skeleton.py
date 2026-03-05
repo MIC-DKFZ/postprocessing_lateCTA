@@ -4,7 +4,7 @@ import argparse
 import SimpleITK as sitk
 import matplotlib.pyplot as plt
 from nndet.core.ops_np import box_iou_np
-from skimage.morphology import skeletonize_3d
+from skimage.morphology import skeletonize
 from typing import Union
 from scipy.spatial import cKDTree, KDTree
 from scipy.ndimage import (
@@ -243,7 +243,7 @@ def skeletonization(segm: np.ndarray) -> np.ndarray:
     # segm_image = sitk.Cast(segm_image, sitk.sitkUInt8)
     # skeleton_image = sitk.BinaryThinning(segm_image)
     # skeleton = sitk.GetArrayFromImage(skeleton_image)
-    skeleton = skeletonize_3d(segm)
+    skeleton = skeletonize(segm)
 
     return skeleton
 
@@ -644,8 +644,6 @@ def process_case(
     outfile = os.path.join(out_folder, file)
 
     if not (os.path.exists(outfile)):
-        print(cid)
-
         # Load time information
         segm_file = os.path.join(segm_folder, f"{cid}.nii.gz")
         assert os.path.exists(
@@ -829,13 +827,13 @@ def process_case(
                     np.array(center_physical) - np.array(brain_centroid_physical)
                 ) / (brain_size + np.finfo(float).eps)
 
-                if (
-                    (box_vector[0] < -0.3)
-                    or (box_vector[0] > 0.1)
-                    or (box_vector[1] < -0.35)
-                    or (box_vector[1] > 0.1)
-                ):
-                    keep = False
+                # if (
+                #    (box_vector[0] < -0.4)
+                #    or (box_vector[0] > 0.2)
+                #    or (box_vector[1] < -0.4)
+                #    or (box_vector[1] > 0.2)
+                # ):
+                #    keep = False
 
             if keep:
                 vol = (box[2] - box[0]) * (box[3] - box[1]) * (box[-1] - box[-2]) / 1000
@@ -878,16 +876,13 @@ def process_case(
                 no_tip = np.array(no_tip, dtype=bool)
                 no_lowdiam = np.array(no_lowdiam, dtype=bool)
                 no_rank = np.array(no_rank, dtype=bool)
-                no_tip, no_lowdiam, no_rank = (
+                no_tip, no_rank = (
                     no_tip[ind_tp],
-                    no_lowdiam[ind_tp],
                     no_rank[ind_tp],
                 )
 
                 if no_tip.sum() == no_tip.shape[0]:
                     message += "no tip found, "
-                if no_lowdiam.sum() == no_lowdiam.shape[0]:
-                    message += "no low diameter found, "
                 if no_rank.sum() == no_rank.shape[0]:
                     message += "no time information found"
 
@@ -905,14 +900,14 @@ def process_case(
         if scores_removed.shape[0] > 0:
             mean_scores_removed = scores_removed.mean()
 
-        if tp_removed:
-            print(
-                f"{cid} : Conserved fraction: {out_boxes.shape[0]*100/(boxes.shape[0] + np.finfo(float).eps)}%, TP removed: {tp_removed}, {message}, mean score removed: {mean_scores_removed}, score before: {scores.mean()},  score after: {out_scores.mean()}"
-            )
-        else:
-            print(
-                f"{cid} : Conserved fraction: {out_boxes.shape[0]*100/(boxes.shape[0] + np.finfo(float).eps)}%, mean score removed: {mean_scores_removed}, score before: {scores.mean()},  score after: {out_scores.mean()}"
-            )
+        # if tp_removed:
+        # print(
+        #    f"{cid} : Conserved fraction: {out_boxes.shape[0]*100/(boxes.shape[0] + np.finfo(float).eps)}%, TP removed: {tp_removed}, {message}, mean score removed: {mean_scores_removed}, score before: {scores.mean()},  score after: {out_scores.mean()}"
+        # )
+        # else:
+        # print(
+        #    f"{cid} : Conserved fraction: {out_boxes.shape[0]*100/(boxes.shape[0] + np.finfo(float).eps)}%, mean score removed: {mean_scores_removed}, score before: {scores.mean()},  score after: {out_scores.mean()}"
+        # )
 
         write_data(data=out_dict, filename=outfile)
 

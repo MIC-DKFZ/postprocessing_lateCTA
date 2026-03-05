@@ -3,7 +3,7 @@ import numpy as np
 import time
 import argparse
 from joblib import Parallel, delayed
-from skimage.morphology import skeletonize_3d
+from skimage.morphology import skeletonize
 from batchgenerators.utilities.file_and_folder_operations import load_json
 import SimpleITK as sitk
 from scipy.ndimage import (
@@ -50,20 +50,18 @@ def extract_skeleton_break_candidates(
     """
 
     # 1️⃣ Skeletonize in 3D
-    skeleton = skeletonize_3d(segm.astype(bool))
-    # skeleton = skeleton_from_distance(segm.astype(bool))
+    skeleton = skeletonize(segm.astype(bool))
     # dilated_skeleton = dilate_skeleton(skeleton)
-    # skeleton = skeleton_from_distance(dilated_skeleton)
-    # skeleton = skeletonize_3d(dilated_skeleton.astype(bool))
+    # skeleton = skeletonize(dilated_skeleton.astype(bool))
 
     # Detect endpoints using 26-neighborhood
     kernel = np.ones((3, 3, 3), dtype=np.uint8)
     kernel[1, 1, 1] = 0
     neighbor_count = convolve(skeleton.astype(np.uint8), kernel, mode="constant")
     endpoints = (skeleton == 1) & (neighbor_count == 1)
-    branches = (skeleton == 1) & (neighbor_count >= 3)
+    # branches = (skeleton == 1) & (neighbor_count >= 3)
 
-    endpoints = np.logical_or(endpoints, branches)
+    # endpoints = np.logical_or(endpoints, branches)
 
     endpoint_vox = np.argwhere(endpoints)
     if len(endpoint_vox) < 2:
@@ -177,10 +175,10 @@ def process_box(
         )
 
         if (
-            (box_vector[0] < -0.3)
-            or (box_vector[0] > 0.1)
-            or (box_vector[1] < -0.35)
-            or (box_vector[1] > 0.1)
+            (box_vector[0] < -0.4)
+            or (box_vector[0] > 0.2)
+            or (box_vector[1] < -0.4)
+            or (box_vector[1] > 0.2)
         ):
             p = 1
 
