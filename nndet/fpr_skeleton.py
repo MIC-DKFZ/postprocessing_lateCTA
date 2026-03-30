@@ -4,7 +4,6 @@ import argparse
 import SimpleITK as sitk
 import matplotlib.pyplot as plt
 from nndet.core.ops_np import box_iou_np
-from skimage.morphology import skeletonize
 from typing import Union
 from scipy.spatial import cKDTree, KDTree
 from scipy.ndimage import (
@@ -21,6 +20,7 @@ from scipy.stats import rankdata
 from joblib import Parallel, delayed
 import time
 
+
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(script_dir))
 from utils.load_save import load_data, write_data
@@ -30,22 +30,22 @@ def find_endpoints(skeleton: np.ndarray) -> np.ndarray:
     """
     Find skeleton endpoints
 
+
     Params
     ------
     skeleton : input skeleton where to find endpoints
 
+
     Returns
     -------
     endpoints : coordinates with endpoints
+
 
     """
     kernel = np.ones((3, 3, 3))
     kernel[1, 1, 1] = 0
     neighbor_count = convolve(skeleton.astype(int), kernel, mode="constant")
     endpoints = (skeleton == 1) & (neighbor_count == 1)
-    branches = (skeleton == 1) & (neighbor_count >= 3)
-
-    endpoints = np.logical_or(endpoints, branches)
     return np.argwhere(endpoints)
 
 
@@ -53,15 +53,18 @@ def compute_tip_image(endpoints: np.ndarray, shape: tuple, radius: int = 15):
     """
     Create image out of all the endpoints found
 
+
     Params
     ------
     endpoints : tip points found from vessel skeletonization
     shape : image dimension
     radius : box radius to generate
 
+
     Returns
     -------
     tip : image with tip information
+
 
     """
     # Initialize image
@@ -86,16 +89,20 @@ def get_closest_point(mask: np.ndarray, point: np.ndarray) -> Union[float, np.nd
     """
     Get closest point in mask to a query point
 
+
     Params
     ------
     mask : mask of interest
     point : query point
 
 
+
+
     Returns
     -------
     dist : distance of closest point
     coord : coordinate of closest point
+
 
     """
     # Coordinates of mask of interest
@@ -119,6 +126,7 @@ def label_endpoint(
     """
     Provide connected component label to each endpoint found
 
+
     Params
     ------
     label_img : connected component labels
@@ -128,11 +136,13 @@ def label_endpoint(
     time_img : time vessel image
     time_mask : masked time vessel image
 
+
     Returns
     -------
     l : label from connected component
     t : closest time value
     close_to_others : endpoint close to other components
+
 
     """
     # Obtain label from connected component image
@@ -169,15 +179,18 @@ def exclude_small_ccs(img: np.ndarray, cc_img: np.ndarray, size_thr: int) -> np.
     """
     Obtain size of connected components
 
+
     Params
     ------
     img : input image
     cc_img : input connected component image
     size_thr : size limit for very small connected components
 
+
     Returns
     -------
     out_img : image without small connected components
+
 
     """
     # Find sizes of connected components
@@ -198,14 +211,17 @@ def distance2segm(dist_map: np.ndarray, cfg: dict) -> np.ndarray:
     Obtain segmentation from distance map,
     and preprocess it
 
+
     Params
     ------
     dist_map : distance map
     cfg : configuration
 
+
     Returns
     -------
     segm : segmentation
+
 
     """
     # Obtain segmentation
@@ -223,43 +239,48 @@ def distance2segm(dist_map: np.ndarray, cfg: dict) -> np.ndarray:
     return segm
 
 
-def skeletonization(segm: np.ndarray) -> np.ndarray:
+def skeletonization(segm: np.ndarray, image_ref) -> np.ndarray:
     """
     Skeletonize from distance map
+
 
     Params
     ------
     segm : segmentation
     image_ref : reference SimpleITK image
 
+
     Returns
     -------
     skeleton : skeleton
     skeleton_image : SimpleITK skeleton image
 
-    """
-    # segm_image = sitk.GetImageFromArray(segm)
-    # segm_image.CopyInformation(image_ref)
-    # segm_image = sitk.Cast(segm_image, sitk.sitkUInt8)
-    # skeleton_image = sitk.BinaryThinning(segm_image)
-    # skeleton = sitk.GetArrayFromImage(skeleton_image)
-    skeleton = skeletonize(segm)
 
-    return skeleton
+    """
+    segm_image = sitk.GetImageFromArray(segm)
+    segm_image.CopyInformation(image_ref)
+    segm_image = sitk.Cast(segm_image, sitk.sitkUInt8)
+    skeleton_image = sitk.BinaryThinning(segm_image)
+    skeleton = sitk.GetArrayFromImage(skeleton_image)
+
+    return skeleton, skeleton_image
 
 
 def dilate_skeleton(skeleton: np.ndarray):
     """
     Dilate skeleton to connected disconnected vessel fragments
 
+
     Params
     ------
     skeleton : skeleton
     cfg : configuration
 
+
     Returns
     -------
     dilated : dilated skeleton
+
 
     """
     # Connect the components: create a rather connected skeleton
@@ -276,17 +297,21 @@ def derive_patch_coords(box: np.ndarray, shape: tuple) -> np.ndarray:
     Derive coordinates of patch surrounding box of interest
     The patch consists of an area twice the size of the original box
 
+
     Output format:
     x0, y0, xf, yf, z0, zf
+
 
     Params
     ------
     box : box coordinates
     shape : image shape
 
+
     Returns
     -------
     coords : coordinates
+
 
     """
     # Derive height, width, and depth
@@ -308,15 +333,19 @@ def locate_close_point_pairs(points: np.ndarray, thr: float) -> np.ndarray:
     """
     Locate close point pairs
 
+
     Params
     ------
     points : point set
     thr : threshold to consider points closeby
 
 
+
+
     Returns
     -------
     inds : close pair indexes
+
 
     """
     tree = cKDTree(points)
@@ -333,15 +362,18 @@ def endpoint_analysis(
     component and touch the borders of the patch, they
     form a continuous vessel, hence remove them
 
+
     Params
     ------
     patch : patch of interest
     endpoints : endpoints found in patch
 
+
     Return
     ------
     keep : binary array telling which endpoints to keep or discard
     cc : connected component of each endpoint
+
 
     """
     # Dilate patch before connected components to thicken skeleton
@@ -389,15 +421,18 @@ def ccs_in_patch(patch: np.ndarray, min_size: int) -> bool:
     Determine if there are any connected components inside the patch
     not touching borders
 
+
     Params
     ------
     patch : input patch
     min_size : minimum size of internal component
 
+
     Returns
     -------
     inside : whether there are full connected components
         inside patch (True) or not (False)
+
 
     """
     # Obtain connected component image
@@ -432,6 +467,7 @@ def keep_patch(
     """
     Based on local skeleton analysis, keep patch or not for FPR
 
+
     Params
     ------
     patch : patch to be analyzed
@@ -440,9 +476,12 @@ def keep_patch(
     time_thrs : minimum and maximum times found in patch to consider it
 
 
+
+
     Returns
     -------
     keep : keep patch if True else False
+
 
     """
 
@@ -528,16 +567,19 @@ def smooth_time(
     with a size below that 95 percentile of the sizes of
     the components found
 
+
     Params
     ------
     time_map : time map
     size_thr : size thresholding (default: 1000)
     median_filter_size : kernel size for median filter (default: 5)
 
+
     Returns
     -------
     smoothed : smoothed time information
     label_mask : mask with connected component labels
+
 
     """
     # Obtain connected components
@@ -587,13 +629,16 @@ def derive_rank_image(img: np.ndarray) -> np.ndarray:
     """
     Derive rank image
 
+
     Params
     ------
     img : input image
 
+
     Returns
     -------
     rank : output rank image
+
 
     """
     mask = img > 0
@@ -612,11 +657,13 @@ def process_case(
     pred_folder: os.PathLike,
     segm_folder: os.PathLike,
     brain_folder: os.PathLike,
+    dist_folder: os.PathLike,
     out_folder: os.PathLike,
     gt_folder: os.PathLike,
 ):
     """
     Process case
+
 
     Params
     ------
@@ -628,9 +675,11 @@ def process_case(
     out_folder : output folder
     gt_folder : ground-truth folder
 
+
     Returns
     -------
     Updated prediction file with preserved boxes
+
 
     """
     # Load prediction information
@@ -644,6 +693,8 @@ def process_case(
     outfile = os.path.join(out_folder, file)
 
     if not (os.path.exists(outfile)):
+        print(cid)
+
         # Load time information
         segm_file = os.path.join(segm_folder, f"{cid}.nii.gz")
         assert os.path.exists(
@@ -653,11 +704,11 @@ def process_case(
         time_map = sitk.GetArrayFromImage(time_image)
 
         # Smooth time information
-        # time_smooth, time_cc = smooth_time(
-        #    time_map=time_map,
-        #    size_thr=cfg["size_thr"],
-        #    median_filter_size=cfg["median_filter_size"],
-        # )
+        time_smooth, time_cc = smooth_time(
+            time_map=time_map,
+            size_thr=cfg["size_thr"],
+            median_filter_size=cfg["median_filter_size"],
+        )
 
         # Load distance map information
         # dist_file = os.path.join(dist_folder, f"{cid}.nii.gz")
@@ -670,7 +721,7 @@ def process_case(
         # Determine brain mask and centroid
         brain_file = os.path.join(brain_folder, f"{cid}.nii.gz")
         brain_image = sitk.ReadImage(brain_file)
-        spacing = np.flip(np.array(brain_image.GetSpacing()))
+        spacing = np.array(brain_image.GetSpacing())
         brain_segm = sitk.GetArrayFromImage(brain_image)
         brain_coords = np.argwhere(brain_segm > 0)
         brain_centroid = brain_coords.mean(axis=0).astype(int)
@@ -684,27 +735,28 @@ def process_case(
         brain_size = (max_coords - min_coords) * spacing
 
         # Skeletonization
-        skeleton = skeletonization(segm=time_map)
+        skeleton, _ = skeletonization(segm=time_cc, image_ref=brain_image)
         # Obtain connected components
         # time_mask = time_map > np.finfo(float).eps
         # time_cc, _ = label(time_mask)
-        # skeleton, _ = skeletonization(segm=time_cc, image_ref=dist_image)
+        # skeleton, _ = skeletonization(segm=time_cc, image_ref=brain_image)
 
         # Dilate skeleton and expand it
         if cfg["expand_skeleton"] == 1:
             dilated_skeleton = dilate_skeleton(skeleton=skeleton)
-            skeleton = skeletonization(segm=dilated_skeleton)
+            skeleton, _ = skeletonization(segm=dilated_skeleton, image_ref=brain_image)
 
         # Obtain diameter of skeleton
         # diameter_map = skeleton * dist_map * 2
 
         # Rank time information
         # skeleton_time = skeleton * time_smooth  # Information on skeleton and time
-        # skeleton_time = skeleton * time_map
+        skeleton_time = skeleton * time_map
         # rank = derive_rank_image(img=skeleton_time)
 
         # Obtain mask with skeleton tips
         tips = find_endpoints(skeleton=skeleton)
+        # Compute dynamic tip radius
         tip_mask = compute_tip_image(
             endpoints=tips, shape=skeleton.shape, radius=cfg["tip_radius"]
         )
@@ -795,7 +847,6 @@ def process_case(
             #    & (patch_diam.sum() > 0).any()
             #    & time_condition
             # )
-
             keep = (patch_tip.sum() > 0).any() & time_condition
 
             # Determine causes for the removal of a positive
@@ -827,13 +878,13 @@ def process_case(
                     np.array(center_physical) - np.array(brain_centroid_physical)
                 ) / (brain_size + np.finfo(float).eps)
 
-                # if (
-                #    (box_vector[0] < -0.4)
-                #    or (box_vector[0] > 0.2)
-                #    or (box_vector[1] < -0.4)
-                #    or (box_vector[1] > 0.2)
-                # ):
-                #    keep = False
+                if (
+                    (box_vector[0] < -0.3)
+                    or (box_vector[0] > 0.1)
+                    or (box_vector[1] < -0.35)
+                    or (box_vector[1] > 0.1)
+                ):
+                    keep = False
 
             if keep:
                 vol = (box[2] - box[0]) * (box[3] - box[1]) * (box[-1] - box[-2]) / 1000
@@ -900,14 +951,14 @@ def process_case(
         if scores_removed.shape[0] > 0:
             mean_scores_removed = scores_removed.mean()
 
-        # if tp_removed:
-        # print(
-        #    f"{cid} : Conserved fraction: {out_boxes.shape[0]*100/(boxes.shape[0] + np.finfo(float).eps)}%, TP removed: {tp_removed}, {message}, mean score removed: {mean_scores_removed}, score before: {scores.mean()},  score after: {out_scores.mean()}"
-        # )
-        # else:
-        # print(
-        #    f"{cid} : Conserved fraction: {out_boxes.shape[0]*100/(boxes.shape[0] + np.finfo(float).eps)}%, mean score removed: {mean_scores_removed}, score before: {scores.mean()},  score after: {out_scores.mean()}"
-        # )
+        if tp_removed:
+            print(
+                f"{cid} : Conserved fraction: {out_boxes.shape[0]*100/(boxes.shape[0] + np.finfo(float).eps)}%, TP removed: {tp_removed}, {message}, mean score removed: {mean_scores_removed}, score before: {scores.mean()},  score after: {out_scores.mean()}"
+            )
+        else:
+            print(
+                f"{cid} : Conserved fraction: {out_boxes.shape[0]*100/(boxes.shape[0] + np.finfo(float).eps)}%, mean score removed: {mean_scores_removed}, score before: {scores.mean()},  score after: {out_scores.mean()}"
+            )
 
         write_data(data=out_dict, filename=outfile)
 
@@ -918,6 +969,7 @@ def filter_out_fps(
     """
     Filter out false positives
 
+
     Params
     ------
     boxes : input boxes
@@ -925,11 +977,13 @@ def filter_out_fps(
     labels : input labels
     keep : flag telling whether to keep or not predicted box
 
+
     Returns
     -------
     out_boxes : filtered boxes
     out_scores : filtered scores
     out_labels : filtered labels
+
 
     """
     # Obtain keep ratio
@@ -957,7 +1011,7 @@ def filter_out_fps(
 def main(args):
     pred_folder = args.pred
     segm_folder = args.segm
-    # dist_folder = args.dist
+    dist_folder = args.dist
     out_folder = args.out
     brain_folder = args.brain
     gt_folder = args.ref
@@ -972,9 +1026,9 @@ def main(args):
     assert os.path.exists(
         segm_folder
     ), f"Segmentation folder '{segm_folder}' does not exist"
-    # assert os.path.exists(
-    #    dist_folder
-    # ), f"Distance map folder '{dist_folder}' does not exist"
+    assert os.path.exists(
+        dist_folder
+    ), f"Distance map folder '{dist_folder}' does not exist"
     assert os.path.exists(
         os.path.dirname(out_folder)
     ), f"Parent output folder '{out_folder}' does not exist"
@@ -996,6 +1050,7 @@ def main(args):
             pred_folder,
             segm_folder,
             brain_folder,
+            dist_folder,
             out_folder,
             gt_folder,
         )
@@ -1008,7 +1063,7 @@ def get_args():
     # Remove predictions outside of lately enhanced regions
     parser = argparse.ArgumentParser()
     parser.add_argument("--pred", help="Prediction folder", type=str)
-    # parser.add_argument("--dist", help="Distance map folder", type=str)
+    parser.add_argument("--dist", help="Distance map folder", type=str)
     parser.add_argument("--segm", help="Time map folder", type=str)
     parser.add_argument("--brain", help="Brain folder", type=str)
     parser.add_argument("--out", help="Output folder with FPR", type=str)
