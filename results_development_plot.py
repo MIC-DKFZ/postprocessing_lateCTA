@@ -151,7 +151,7 @@ def main(args):
     legend_labels = []
     for m in methods:
         f = data[m]["False occlusions per scan"]
-        label = f"{m}\n" f"{f['median']:.1f} (95% CI: {f['p2_5']:.2f}–{f['p97_5']:.2f})"
+        label = f"{m}\n" f"{f['median']:.1f} (95% CI: {f['p2_5']:.1f}–{f['p97_5']:.1f})"
         legend_labels.append(label)
 
     mean_handle = Line2D(
@@ -169,7 +169,7 @@ def main(args):
     leg = ax.legend(
         handles,
         labels,
-        title="Incorrect occlusions per scan (N = 32)\n",
+        title="Incorrect occlusion detections per scan (N = 32)\n",
         fontsize=11,
         title_fontsize=11,
         loc="center left",  # anchor legend from its left side
