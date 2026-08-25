@@ -20,7 +20,6 @@ from scipy.stats import rankdata
 from joblib import Parallel, delayed
 import time
 
-
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(script_dir))
 from utils.load_save import load_data, write_data
@@ -696,7 +695,7 @@ def process_case(
         print(cid)
 
         # Load time information
-        segm_file = os.path.join(segm_folder, f"{cid}.nii.gz")
+        segm_file = os.path.join(segm_folder, f"{cid}_0001.nii.gz")
         assert os.path.exists(
             segm_file
         ), f"Segmentation file '{segm_file}' does not exist"
