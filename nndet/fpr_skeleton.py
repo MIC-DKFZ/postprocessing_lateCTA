@@ -600,18 +600,22 @@ def smooth_time(
     if labels.shape[0] == 0:
         # Too harsh filtering applied for connected components
         # Apply directly map filtering
-        smoothed = median_filter(input=time_map, size=median_filter_size)
+        smoothed = median_filter(
+            input=time_map.astype(np.float32, copy=False), size=median_filter_size
+        )
         label_mask = (time_map > 0).astype(np.uint8)
 
         return smoothed, label_mask
 
-    # Iterate through the greatest connected components
-    smoothed = np.zeros(time_map.shape)
-    label_mask = np.zeros(time_map.shape)
-    for l in labels:
-        if l != 0:
-            smoothed[label_time == l] = time_map[label_time == l]
-            label_mask[label_time == l] = l
+    # Keep only the connected components that survive the size threshold.
+    # NOTE: this replaces a per-label Python loop that recomputed 'label_time == l'
+    # twice per component (two full-volume boolean arrays per iteration). np.isin
+    # builds a single mask instead. The output dtypes are also pinned: np.zeros
+    # defaults to float64, which doubled the memory of both volumes for no benefit
+    keep_mask = np.isin(label_time, labels)
+    smoothed = np.where(keep_mask, time_map, 0).astype(np.float32, copy=False)
+    label_mask = np.where(keep_mask, label_time, 0).astype(np.int32, copy=False)
+    del keep_mask
 
     # smoothed_mask = (smoothed > 0).astype(int)
 
@@ -619,6 +623,8 @@ def smooth_time(
     # smoothed = apply_masked_median_filter(image=smoothed,
     #                                       mask=smoothed_mask,
     #                                       size=median_filter_size)
+    # Release the label volume before median_filter allocates its own output
+    del label_time, time_mask
     smoothed = median_filter(input=smoothed, size=median_filter_size)
 
     return smoothed, label_mask
