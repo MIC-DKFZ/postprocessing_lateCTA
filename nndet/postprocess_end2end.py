@@ -18,10 +18,17 @@ from scipy.ndimage import (
     generate_binary_structure,
     median_filter,
 )
+import atexit
+import csv
+import gc
+import resource
 import shutil
+import signal
 import subprocess
 import tempfile
+import traceback
 from contextlib import contextmanager
+from datetime import datetime
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(script_dir))
@@ -46,6 +53,13 @@ VERBOSE_R3 = False
 
 # Suffix identifying the first (and only) input channel of a case
 CHANNEL_SUFFIX = "_0000.nii.gz"
+
+
+# Label of the brain class in the TotalSegmentator "total" task class map
+BRAIN_LABEL = 90
+
+# Filename used for the multilabel segmentation of a full (non-roi_subset) run
+ML_SEG_NAME = "segmentation.nii.gz"
 
 
 def cid_from_file(file: os.PathLike) -> str:
@@ -122,14 +136,32 @@ def select_files(data_folder: os.PathLike, ids: set = None) -> list:
     return keep, missing
 
 
+FIELDS = [
+    "run_id",
+    "ts",
+    "cid",
+    "stage",
+    "seconds",
+    "rss_gb",
+    "peak_rss_gb",
+    "status",
+    "error",
+]
+
+
 class StageTimer:
     """
-    Collect wall-clock timings per processing stage, per case
+    Collect wall-clock timings and resident memory per processing stage, per case
+
+    Rows are appended to the CSV and flushed to disk as soon as each stage ends, so
+    the record survives a hard kill (OOM killer, SIGKILL, node failure) where no
+    traceback or atexit handler would ever run.
 
 
     Usage
     -----
     timer = StageTimer()
+    timer.attach_csv("out/timings.csv")
     with timer("inference", cid):
         ...
     timer.summary()
@@ -137,8 +169,110 @@ class StageTimer:
     """
 
     def __init__(self, sync_cuda: bool = True):
-        self.records = []  # list of {"cid", "stage", "seconds"}
+        self.records = []  # list of dicts keyed by FIELDS
         self.sync_cuda = sync_cuda
+        self._fh = None
+        self._writer = None
+        # Identifies this invocation. When several short-lived runs append to the
+        # same CSV (e.g. with --max_cases), this is what separates them
+        self.run_id = f"{datetime.now().strftime('%Y%m%dT%H%M%S')}_{os.getpid()}"
+
+    def attach_csv(self, path: os.PathLike, resume: bool = True) -> None:
+        """
+        Stream every recorded row to 'path' as it happens
+
+        With resume=True an existing file is appended to rather than truncated, so a
+        series of short-lived runs (--max_cases) accumulates into a single timeline
+        and the evidence from a run that crashed is preserved.
+        """
+        exists = os.path.exists(path) and os.path.getsize(path) > 0
+        mode = "a" if (exists and resume) else "w"
+
+        if mode == "a":
+            # Appending to a file written by an older version would silently misalign
+            # every column, so verify the header matches before trusting it
+            try:
+                with open(path, "r", newline="") as f:
+                    header = next(csv.reader(f), [])
+            except Exception:
+                header = []
+
+            if header != FIELDS:
+                backup = f"{path}.{datetime.now().strftime('%Y%m%dT%H%M%S')}.bak"
+                shutil.move(path, backup)
+                print(
+                    f"NOTE: existing timings have a different column layout and were "
+                    f"moved to '{os.path.basename(backup)}'; starting a new file",
+                    flush=True,
+                )
+                exists, mode = False, "w"
+            else:
+                # A run killed mid-write can leave a partial final line. Append a
+                # newline if needed so the next row does not fuse onto it
+                try:
+                    with open(path, "rb") as f:
+                        f.seek(-1, os.SEEK_END)
+                        needs_nl = f.read(1) not in (b"\n", b"\r")
+                    if needs_nl:
+                        with open(path, "a", newline="") as f:
+                            f.write("\n")
+                        print(
+                            "NOTE: repaired a truncated final line in the timings file",
+                            flush=True,
+                        )
+                except Exception:
+                    pass
+
+        # line buffered; every write is followed by an explicit flush + fsync
+        self._fh = open(path, mode, newline="", buffering=1)
+        self._writer = csv.DictWriter(
+            self._fh, fieldnames=FIELDS, extrasaction="ignore"
+        )
+        if mode == "w" or not exists:
+            self._writer.writeheader()
+            self._fh.flush()
+
+        # Emit anything recorded before the CSV was attached
+        for rec in self.records:
+            self._write_row(rec)
+
+    def _write_row(self, rec: dict) -> None:
+        if self._writer is None:
+            return
+        try:
+            self._writer.writerow(rec)
+            self._fh.flush()
+            os.fsync(self._fh.fileno())  # push past the OS page cache
+        except Exception as exc:  # never let logging kill the run
+            print(f"WARNING: could not write timing row: {exc}", flush=True)
+
+    def close(self) -> None:
+        if self._fh is not None:
+            try:
+                self._fh.flush()
+                os.fsync(self._fh.fileno())
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh, self._writer = None, None
+
+    @staticmethod
+    def rss_gb() -> float:
+        """Current resident set size of this process, in GiB"""
+        try:
+            with open("/proc/self/statm", "r") as f:
+                pages = int(f.read().split()[1])
+            return pages * os.sysconf("SC_PAGE_SIZE") / 2**30
+        except Exception:
+            return float("nan")
+
+    @staticmethod
+    def peak_rss_gb() -> float:
+        """Peak RSS of this process since it started, in GiB (monotonic)"""
+        try:
+            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20
+        except Exception:
+            return float("nan")
 
     def _sync(self):
         # CUDA kernels are launched asynchronously: without a sync, a GPU stage
@@ -150,18 +284,52 @@ class StageTimer:
     def __call__(self, stage: str, cid: str = "-"):
         self._sync()
         t0 = time.perf_counter()
+        status, err = "ok", ""
         try:
             yield
+        except BaseException as exc:
+            # Record the partial timing before the exception propagates, so a stage
+            # that dies still leaves a row behind
+            status, err = "error", f"{type(exc).__name__}: {exc}"[:500]
+            raise
         finally:
-            self._sync()
-            self.record(stage=stage, cid=cid, seconds=time.perf_counter() - t0)
+            try:
+                self._sync()
+            except Exception:
+                pass
+            self.record(
+                stage=stage,
+                cid=cid,
+                seconds=time.perf_counter() - t0,
+                status=status,
+                error=err,
+            )
 
-    def record(self, stage: str, cid: str, seconds: float) -> None:
-        """Add a timing measured outside of the context manager"""
-        self.records.append({"cid": cid, "stage": stage, "seconds": seconds})
+    def record(
+        self,
+        stage: str,
+        cid: str,
+        seconds: float,
+        status: str = "ok",
+        error: str = "",
+    ) -> None:
+        """Add a timing and immediately persist it"""
+        rec = {
+            "run_id": self.run_id,
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "cid": cid,
+            "stage": stage,
+            "seconds": seconds,
+            "rss_gb": self.rss_gb(),
+            "peak_rss_gb": self.peak_rss_gb(),
+            "status": status,
+            "error": error,
+        }
+        self.records.append(rec)
+        self._write_row(rec)
 
     def to_frame(self) -> pd.DataFrame:
-        return pd.DataFrame(self.records, columns=["cid", "stage", "seconds"])
+        return pd.DataFrame(self.records, columns=FIELDS)
 
     def summary(self, total_seconds: float = None, n_cases: int = None) -> pd.DataFrame:
         """Aggregate per stage and print a table. Returns the aggregated frame."""
@@ -194,6 +362,76 @@ class StageTimer:
         return agg
 
 
+def count_children() -> int:
+    """
+    Number of live child processes of this process
+
+    nnU-Net spawns a preprocessing worker pool per data iterator. If those workers
+    are not reaped between cases they accumulate, and each one holds its own copy of
+    the volume it was handed, so host memory grows case by case.
+    """
+    try:
+        return len(os.listdir(f"/proc/{os.getpid()}/task")) and len(
+            [
+                p
+                for p in os.listdir("/proc")
+                if p.isdigit() and _ppid_of(int(p)) == os.getpid()
+            ]
+        )
+    except Exception:
+        return -1
+
+
+def _ppid_of(pid: int) -> int:
+    try:
+        with open(f"/proc/{pid}/stat", "r") as f:
+            # field 4 is ppid; the comm field may contain spaces so split after ')'
+            return int(f.read().rpartition(")")[2].split()[1])
+    except Exception:
+        return -1
+
+
+def count_open_fds() -> int:
+    """Number of open file descriptors, another thing that leaks across iterations"""
+    try:
+        return len(os.listdir(f"/proc/{os.getpid()}/fd"))
+    except Exception:
+        return -1
+
+
+def system_memory_gb() -> tuple:
+    """Return (total, available) system memory in GiB, or (nan, nan)"""
+    try:
+        info = {}
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                key, _, rest = line.partition(":")
+                info[key] = float(rest.strip().split()[0]) / 2**20  # kB -> GiB
+        return info.get("MemTotal", float("nan")), info.get(
+            "MemAvailable", float("nan")
+        )
+    except Exception:
+        return float("nan"), float("nan")
+
+
+def check_memory_headroom(limit_gb: float, cid: str = "-") -> None:
+    """
+    Abort with a clear error if this process is close to a memory ceiling
+
+    An OOM kill arrives as SIGKILL: no traceback, no cleanup, nothing written. This
+    raises a normal MemoryError slightly before that point, so the failure is
+    recorded and (with --keep_going) the run continues with the next case.
+    """
+    if limit_gb is None or limit_gb <= 0:
+        return
+    rss = StageTimer.rss_gb()
+    if np.isfinite(rss) and rss > limit_gb:
+        raise MemoryError(
+            f"RSS {rss:.2f} GB exceeded the --mem_limit_gb ceiling of {limit_gb:.2f} GB "
+            f"while processing '{cid}'. Lower --np, or process this case separately"
+        )
+
+
 def fmt_hms(seconds: float) -> str:
     """Format a duration in seconds as HH:MM:SS.mmm"""
     h, rem = divmod(float(seconds), 3600.0)
@@ -207,10 +445,16 @@ def run_totalsegmentator(
     totalseg_bin: str = DEFAULT_TOTALSEG_BIN,
     fast: bool = False,
     device: str = "gpu",
+    roi_subset: bool = False,
 ) -> None:
     """
-    Run TotalSegmentator (task "total") as an external process and write the
-    brain mask to <out_folder>/brain.nii.gz
+    Run TotalSegmentator (task "total") as an external process
+
+
+    With roi_subset=False (default) the full multilabel segmentation is written to
+    <out_folder>/<ML_SEG_NAME> and the caller extracts label BRAIN_LABEL. With
+    roi_subset=True only the brain class is predicted, into
+    <out_folder>/brain.nii.gz, which is much faster but crops first
 
 
     Params
@@ -220,30 +464,51 @@ def run_totalsegmentator(
     totalseg_bin : path to the TotalSegmentator executable (separate environment)
     fast : use the 3mm model instead of the 1.5mm one
     device : "gpu", "cpu" or "gpu:X"
+    roi_subset : predict only the brain class (fast, but crops to an ROI first)
 
 
     Returns
     -------
-    None (writes <out_folder>/brain.nii.gz)
+    None (writes into out_folder)
 
     """
-    cmd = [
-        totalseg_bin,
-        "-i",
-        str(in_file),
-        "-o",
-        str(out_folder),
-        "--task",
-        "total",
-        "--roi_subset",
-        "brain",
-        # roi_subset crops with a 6mm model that is unreliable on head-only FOVs;
-        # robust_crop uses the slower but safer 3mm model instead
-        "--robust_crop",
-        "--device",
-        device,
-        "--quiet",
-    ]
+    if roi_subset:
+        # Fast path: predict the brain class only. NOTE this crops to a region of
+        # interest first, and that crop can cut the segmentation off at the edge.
+        # robust_crop uses the slower 3mm crop model instead of the 6mm one, but the
+        # crop still happens, so this path does NOT reproduce a full run exactly
+        cmd = [
+            totalseg_bin,
+            "-i",
+            str(in_file),
+            "-o",
+            str(out_folder),
+            "--task",
+            "total",
+            "--roi_subset",
+            "brain",
+            "--robust_crop",
+            "--device",
+            device,
+            "--quiet",
+        ]
+    else:
+        # Full run over every class, then extract the brain label. This is what
+        # totalsegmentator(input_img) with no arguments does, so it reproduces masks
+        # generated by the standalone segmentation script. Much slower
+        cmd = [
+            totalseg_bin,
+            "-i",
+            str(in_file),
+            "-o",
+            os.path.join(str(out_folder), ML_SEG_NAME),
+            "--task",
+            "total",
+            "--ml",
+            "--device",
+            device,
+            "--quiet",
+        ]
     if fast:
         cmd.append("--fast")
 
@@ -263,10 +528,18 @@ def segment_brain(
     totalseg_bin: str = DEFAULT_TOTALSEG_BIN,
     fast: bool = False,
     device: str = "gpu",
+    brain_folder: os.PathLike = "",
+    roi_subset: bool = False,
 ) -> sitk.Image:
     """
-    Return a binary brain mask (sitk.Image) in the same space as in_file,
-    computed with TotalSegmentator and cached on disk
+    Return a binary brain mask (sitk.Image) in the same space as in_file
+
+
+    If brain_folder is given and contains <cid>.nii.gz, that mask is used directly and
+    TotalSegmentator is not run. This is what reproduces earlier experiments exactly:
+    the R3 rule normalises by the bounding box of the mask, so even a handful of stray
+    voxels changes brain_size by double-digit percentages and rescales box_vector for
+    every box in the case.
 
 
     Params
@@ -277,6 +550,8 @@ def segment_brain(
     totalseg_bin : path to the TotalSegmentator executable (separate environment)
     fast : use the 3mm model instead of the 1.5mm one
     device : "gpu", "cpu" or "gpu:X"
+    brain_folder : folder with precomputed masks, taking priority over segmentation
+    roi_subset : predict only the brain class (fast, but crops to an ROI first)
 
 
     Returns
@@ -284,6 +559,13 @@ def segment_brain(
     brain : binary brain mask in the geometry of in_file
 
     """
+    # Precomputed masks win: no segmentation, no caching, no modification
+    if len(str(brain_folder)) > 0:
+        external = os.path.join(brain_folder, f"{cid}.nii.gz")
+        if os.path.exists(external):
+            brain = sitk.ReadImage(external)
+            return sitk.Cast(brain > 0, sitk.sitkUInt8)
+
     os.makedirs(cache_folder, exist_ok=True)
     mask_file = os.path.join(cache_folder, f"{cid}.nii.gz")
 
@@ -291,8 +573,8 @@ def segment_brain(
     if os.path.exists(mask_file):
         return sitk.ReadImage(mask_file)
 
-    # Per-case temporary folder: TotalSegmentator always names its output
-    # "brain.nii.gz", so a shared folder would let cases overwrite each other
+    # Per-case temporary folder: TotalSegmentator uses fixed output names, so a
+    # shared folder would let cases overwrite each other
     tmp_out = tempfile.mkdtemp(prefix=f"totalseg_{cid}_")
     try:
         run_totalsegmentator(
@@ -301,17 +583,34 @@ def segment_brain(
             totalseg_bin=totalseg_bin,
             fast=fast,
             device=device,
+            roi_subset=roi_subset,
         )
-        brain_file = os.path.join(tmp_out, "brain.nii.gz")
-        if not os.path.exists(brain_file):
+
+        if roi_subset:
+            seg_file = os.path.join(tmp_out, "brain.nii.gz")
+        else:
+            seg_file = os.path.join(tmp_out, ML_SEG_NAME)
+        if not os.path.exists(seg_file):
             raise RuntimeError(
-                f"TotalSegmentator did not produce a brain mask for '{cid}'"
+                f"TotalSegmentator did not produce '{os.path.basename(seg_file)}' "
+                f"for '{cid}'"
             )
-        brain = sitk.ReadImage(brain_file)
+
+        seg = sitk.ReadImage(seg_file)
+        if roi_subset:
+            # Single-class output: any positive voxel is brain
+            brain = sitk.Cast(seg > 0, sitk.sitkUInt8)
+        else:
+            # Multilabel output: keep only the brain class, exactly as
+            # (segm == 90) does in the standalone segmentation script
+            brain = sitk.Cast(
+                sitk.Equal(sitk.Cast(seg, sitk.sitkInt32), BRAIN_LABEL),
+                sitk.sitkUInt8,
+            )
+        brain.CopyInformation(seg)
     finally:
         shutil.rmtree(tmp_out, ignore_errors=True)
 
-    brain = sitk.Cast(brain > 0, sitk.sitkUInt8)
     if sitk.GetArrayViewFromImage(brain).sum() == 0:
         raise RuntimeError(f"Empty brain mask for '{cid}'")
 
@@ -378,6 +677,47 @@ def precompute_brain_masks(
             f"({'cached' if cached else 'segmented'}, {elapsed:.2f}s)",
             flush=True,
         )
+
+
+def save_time_vessel_map(
+    time_map: np.ndarray,
+    image_ref,
+    out_folder: os.PathLike,
+    cid: str,
+    suffix: str = "_0001.nii.gz",
+) -> str:
+    """
+    Write the predicted time-vessel map to disk for comparison against the
+    precomputed maps used to tune the post-processing thresholds
+
+
+    The output is written in the geometry of image_ref (the CTA) and with the same
+    naming convention as the precomputed maps (<cid>_0001.nii.gz), so both can be
+    read back and compared voxel for voxel without any resampling.
+
+
+    Params
+    ------
+    time_map : predicted time-vessel map, numpy order (z, y, x)
+    image_ref : SimpleITK image defining spacing, origin and direction
+    out_folder : folder to write into
+    cid : case identifier
+    suffix : filename suffix, matching the precomputed maps by default
+
+
+    Returns
+    -------
+    outfile : path of the written map
+
+    """
+    os.makedirs(out_folder, exist_ok=True)
+    outfile = os.path.join(out_folder, f"{cid}{suffix}")
+
+    img = sitk.GetImageFromArray(time_map.astype(np.float32, copy=False))
+    img.CopyInformation(image_ref)  # spacing, origin and direction of the CTA
+    sitk.WriteImage(img, outfile, True)
+
+    return outfile
 
 
 def postprocess_preds(
@@ -562,9 +902,16 @@ def find_endpoints(skeleton: np.ndarray) -> np.ndarray:
 
 
     """
-    kernel = np.ones((3, 3, 3))
+    # NOTE: dtypes matter a lot here. skeleton.astype(int) makes an int64 copy
+    # (8 bytes/voxel) and a float64 kernel promotes the convolution output to float64
+    # (another 8 bytes/voxel). scipy.ndimage.convolve returns the input dtype, and a
+    # 3x3x3 neighbourhood can hold at most 26 neighbours, so uint8 is sufficient and
+    # uses 1 byte/voxel instead of 16
+    kernel = np.ones((3, 3, 3), dtype=np.uint8)
     kernel[1, 1, 1] = 0
-    neighbor_count = convolve(skeleton.astype(int), kernel, mode="constant")
+    neighbor_count = convolve(
+        skeleton.astype(np.uint8, copy=False), kernel, mode="constant"
+    )
     endpoints = (skeleton == 1) & (neighbor_count == 1)
     return np.argwhere(endpoints)
 
@@ -587,8 +934,9 @@ def compute_tip_image(endpoints: np.ndarray, shape: tuple, radius: int = 15):
 
 
     """
-    # Initialize image
-    tip = np.zeros(shape)
+    # Initialize image (uint8: this is a binary mask, np.zeros would default to
+    # float64 and use 8x the memory of a full-resolution volume for no benefit)
+    tip = np.zeros(shape, dtype=np.uint8)
 
     # Convert each point into a box centered around it
     start, end = endpoints - radius, endpoints + radius
@@ -804,7 +1152,12 @@ def process_case(
             if time_vals.shape[0] > 0:
                 max_time = np.percentile(time_vals, 5)
 
-            time_condition = max_time < cfg["t_high_percentile"]
+            # R2: the time value must fall inside the enhancement window. Both bounds
+            # are required to reproduce fpr_skeleton.py; dropping the lower one keeps
+            # every early-enhancing box that the original rejected
+            time_condition = (max_time > cfg["t_low_percentile"]) & (
+                max_time < cfg["t_high_percentile"]
+            )
 
             # Combine R1 and R2 constraints
             keep = (patch_tip.sum() > 0).any() & time_condition
@@ -817,6 +1170,8 @@ def process_case(
                 ) / (
                     brain_size + np.finfo(float).eps
                 )  # normalized box coordinate to brain centroid difference
+                if VERBOSE_R3:
+                    print(center_physical, brain_centroid_physical, brain_size)
 
                 if (
                     (box_vector[0] < -0.3)
@@ -826,16 +1181,17 @@ def process_case(
                 ):
                     keep = False
 
-                if keep:  # Remove boxes with very small or very large volumes
-                    vol = (
-                        (box[2] - box[0])
-                        * (box[3] - box[1])
-                        * (box[-1] - box[-2])
-                        / 1000
-                    )
+            # R4: reject implausible box volumes (in mL, hence the /1000). Applied on
+            # the raw box rather than the enlarged patch, matching fpr_skeleton.py.
+            # The bounds were hardcoded as 1 and 200 in the original; they are read
+            # from the config here if present, so the defaults reproduce it exactly
+            if keep:
+                vol = (box[2] - box[0]) * (box[3] - box[1]) * (box[-1] - box[-2]) / 1000
 
-                    if (vol < 1) or (vol > 200):
-                        keep = False
+                if (vol < cfg.get("min_volume", 1)) or (
+                    vol > cfg.get("max_volume", 200)
+                ):
+                    keep = False
 
             keep_box.append(keep)
 
@@ -868,6 +1224,10 @@ def main(args):
     totalseg_bin = args.totalseg_bin  # TotalSegmentator executable (separate env)
     totalseg_fast = args.totalseg_fast  # Use the 3mm TotalSegmentator model
     totalseg_device = args.totalseg_device  # Device for TotalSegmentator
+    keep_going = args.keep_going  # Continue after a failing case
+    mem_limit_gb = args.mem_limit_gb  # RSS ceiling per case (0 disables)
+    save_maps = args.save_maps  # Folder for predicted time-vessel maps ('' disables)
+    max_cases = args.max_cases  # Process at most this many new cases (0 = all)
     id_file = args.i  # file with specific IDs to postprocess
 
     assert os.path.exists(data_folder), f"Data folder '{data_folder}' does not exist"
@@ -892,6 +1252,57 @@ def main(args):
     # Create output folder if it does not exist
     if not (os.path.exists(out_folder)):
         os.makedirs(out_folder)
+
+    # Start streaming timings to disk NOW. Every row is flushed and fsynced as soon
+    # as its stage ends, so the file stays valid even if the process is killed
+    # outright (OOM killer, scheduler, node failure) with no chance to clean up
+    timings_file = os.path.join(out_folder, "timings.csv")
+    timer.attach_csv(timings_file, resume=True)
+    print(f"Streaming timings to '{timings_file}' (run_id {timer.run_id})", flush=True)
+
+    if len(save_maps) > 0:
+        os.makedirs(save_maps, exist_ok=True)
+        print(
+            f"Saving predicted time-vessel maps to '{save_maps}'. NOTE: cases whose "
+            "output already exists are skipped before inference, so clear the output "
+            "folder (or use a fresh one) to get a map for every case",
+            flush=True,
+        )
+
+    mem_total, mem_avail = system_memory_gb()
+    print(
+        f"System memory: {mem_total:.1f} GB total, {mem_avail:.1f} GB available | "
+        f"workers (--np) = {workers}"
+        + (f" | ceiling {mem_limit_gb:.1f} GB" if mem_limit_gb > 0 else ""),
+        flush=True,
+    )
+
+    # Print whatever was collected on the way out, for any exit path that still runs
+    # Python: normal end, unhandled exception, sys.exit, SIGTERM or SIGINT
+    def _final_report(reason: str = "exit"):
+        if getattr(_final_report, "done", False):
+            return
+        _final_report.done = True
+        print(f"\n--- run ended ({reason}) ---", flush=True)
+        try:
+            timer.summary(total_seconds=time.perf_counter() - run_t0, n_cases=None)
+        except Exception as exc:
+            print(f"Could not print summary: {exc}", flush=True)
+        timer.close()
+
+    atexit.register(_final_report, "atexit")
+
+    def _on_signal(signum, frame):
+        # SIGTERM is what a scheduler or 'kill' sends; SIGKILL cannot be caught,
+        # which is exactly why the CSV is written incrementally rather than here
+        _final_report(f"signal {signal.Signals(signum).name}")
+        raise SystemExit(128 + signum)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            signal.signal(_sig, _on_signal)
+        except (ValueError, OSError, AttributeError):
+            pass  # not available on this platform or not the main thread
 
     # Load postprocessing configuration (process_case expects a dict, not a path)
     cfg = load_json(cfg_file)
@@ -958,74 +1369,166 @@ def main(args):
         )
 
     # iterate through the selected files: time-vessel map estimation + postprocessing
+    n_ok, n_failed, n_done, failed_cids = 0, 0, 0, []
     for i, file in enumerate(files):
         cid = cid_from_file(file)
         full_file = os.path.join(data_folder, file)
 
+        # Skip completed cases BEFORE any work. process_case has its own check, but it
+        # only fires after inference has already run, so a resumed run would repeat
+        # ~60s of GPU work per finished case just to throw the result away
+        expected_out = os.path.join(out_folder, f"{cid}_boxes.pkl")
+        if os.path.exists(expected_out):
+            print(
+                f"cid : {cid} ({i + 1}/{len(files)}) already done, skipping", flush=True
+            )
+            n_done += 1
+            continue
+
+        # Stop after a fixed number of cases so a long run can be split across several
+        # short-lived processes. Anything the process leaks is reclaimed by the OS on
+        # exit, and the next invocation resumes from the skip check above
+        if (max_cases > 0) and (n_ok + n_failed >= max_cases):
+            print(
+                f"\nReached --max_cases {max_cases}; exiting cleanly. "
+                f"{len(files) - n_done - n_ok - n_failed} case(s) still to do",
+                flush=True,
+            )
+            break
+
         print(f"cid : {cid} ({i + 1}/{len(files)})", flush=True)
         case_t0 = time.perf_counter()
 
-        with timer("read_image", cid):
-            image = sitk.ReadImage(full_file)
+        try:
+            with timer("read_image", cid):
+                image = sitk.ReadImage(full_file)
 
-        # Load brain information (already computed by precompute_brain_masks; this
-        # only reads the cached mask, and recomputes it if the cache was cleared)
-        with timer("read_brain_mask", cid):
-            brain_img = segment_brain(
-                in_file=full_file,
-                cache_folder=brain_cache,
-                cid=cid,
-                totalseg_bin=totalseg_bin,
-                fast=totalseg_fast,
-                device=totalseg_device,
-            )
-            brain = sitk.GetArrayFromImage(brain_img).astype(np.uint8)
-
-        with timer("prepare_input", cid):
-            img, props = SimpleITKIO().read_images([full_file])
-            assert brain.shape == img.shape[1:], (
-                f"Brain mask shape {brain.shape} does not match image shape "
-                f"{img.shape[1:]} for case '{cid}'"
-            )
-            ind = np.where(brain == 0)
-            img[0, ind[0], ind[1], ind[2]] = (
-                -1024.0
-            )  # Set background outside brain vessels to -1024
-
-        with timer("inference", cid):
-            iterator = predictor.get_data_iterator_from_raw_npy_data(
-                [img], None, [props], None, workers
-            )
-            r = predictor.predict_from_data_iterator(iterator, False, 1)
-
-        # Postprocess time-vessel map prediction with distance, time, and segmentation heads
-        with timer("postprocess_preds", cid):
-            time_vessel_map = postprocess_preds(pred=r[0], params=params, brain=brain)
-
-        # Set up prediction information
-        pred_file = os.path.join(pred_folder, f"{cid}_boxes.pkl")
-        if os.path.exists(pred_file):
-            with timer("process_case", cid):
-                process_case(
-                    file=pred_file,
-                    cfg=cfg,
-                    image=image,
-                    time_map=time_vessel_map,
-                    brain_segm=brain,
-                    out_folder=out_folder,
+            # Load brain information (already computed by precompute_brain_masks;
+            # this only reads the cached mask, recomputing it if the cache was cleared)
+            with timer("read_brain_mask", cid):
+                brain_img = segment_brain(
+                    in_file=full_file,
+                    cache_folder=brain_cache,
+                    cid=cid,
+                    totalseg_bin=totalseg_bin,
+                    fast=totalseg_fast,
+                    device=totalseg_device,
                 )
-        else:
-            print(f"    no prediction file '{pred_file}', skipping", flush=True)
+                brain = sitk.GetArrayFromImage(brain_img).astype(np.uint8)
 
-        print(f"    case time: {time.perf_counter() - case_t0:.2f}s", flush=True)
+            with timer("prepare_input", cid):
+                img, props = SimpleITKIO().read_images([full_file])
+                assert brain.shape == img.shape[1:], (
+                    f"Brain mask shape {brain.shape} does not match image shape "
+                    f"{img.shape[1:]} for case '{cid}'"
+                )
+                ind = np.where(brain == 0)
+                img[0, ind[0], ind[1], ind[2]] = (
+                    -1024.0
+                )  # Set background outside brain vessels to -1024
+
+            check_memory_headroom(mem_limit_gb, cid)
+            with timer("inference", cid):
+                iterator = predictor.get_data_iterator_from_raw_npy_data(
+                    [img], None, [props], None, workers
+                )
+                r = predictor.predict_from_data_iterator(iterator, False, 1)
+
+            # Postprocess time-vessel map with distance, time and segmentation heads
+            with timer("postprocess_preds", cid):
+                time_vessel_map = postprocess_preds(
+                    pred=r[0], params=params, brain=brain
+                )
+
+            # Optionally persist the predicted map for threshold recalibration
+            if len(save_maps) > 0:
+                with timer("save_time_vessel_map", cid):
+                    save_time_vessel_map(
+                        time_map=time_vessel_map,
+                        image_ref=image,
+                        out_folder=save_maps,
+                        cid=cid,
+                    )
+
+            check_memory_headroom(mem_limit_gb, cid)
+
+            # Set up prediction information
+            pred_file = os.path.join(pred_folder, f"{cid}_boxes.pkl")
+            if os.path.exists(pred_file):
+                with timer("process_case", cid):
+                    process_case(
+                        file=pred_file,
+                        cfg=cfg,
+                        image=image,
+                        time_map=time_vessel_map,
+                        brain_segm=brain,
+                        out_folder=out_folder,
+                    )
+            else:
+                print(f"    no prediction file '{pred_file}', skipping", flush=True)
+
+            n_ok += 1
+
+        except Exception as exc:
+            # One bad case should not throw away the whole run. The failure is
+            # recorded in the CSV and printed with a full traceback, then the loop
+            # moves on. MemoryError is included: it is a normal Python exception,
+            # unlike an OOM kill, which never reaches this handler
+            n_failed += 1
+            failed_cids.append(cid)
+            timer.record(
+                stage="case_failed",
+                cid=cid,
+                seconds=time.perf_counter() - case_t0,
+                status="error",
+                error=f"{type(exc).__name__}: {exc}"[:500],
+            )
+            print(f"    FAILED: {type(exc).__name__}: {exc}", flush=True)
+            traceback.print_exc()
+            if not keep_going:
+                raise
+
+        finally:
+            # Drop references to the large per-case volumes before the next
+            # iteration allocates its own, whether the case succeeded or not.
+            # Rebinding to None is what actually releases them: del locals()[...]
+            # would operate on a snapshot dict and free nothing
+            img = r = time_vessel_map = brain = brain_img = image = None
+            iterator = props = None
+            gc.collect()
+
+            print(
+                f"    case time: {time.perf_counter() - case_t0:.2f}s"
+                f" | RSS {timer.rss_gb():.2f} GB (peak {timer.peak_rss_gb():.2f} GB)"
+                f" | children {count_children()} | fds {count_open_fds()}",
+                flush=True,
+            )
 
     # Report end-to-end execution time
-    total_seconds = time.perf_counter() - run_t0
-    timer.summary(total_seconds=total_seconds, n_cases=len(files))
+    print(
+        f"\nCompleted {n_ok} case(s) this run, {n_failed} failed, "
+        f"{n_done} already done, {len(files)} selected",
+        flush=True,
+    )
+    if failed_cids:
+        print(f"Failed cases: {', '.join(failed_cids)}", flush=True)
+        failed_file = os.path.join(out_folder, "failed_cids.txt")
+        with open(failed_file, "w") as f:
+            f.write("\n".join(failed_cids) + "\n")
+        print(f"Retry them with --i '{failed_file}'", flush=True)
 
-    timings_file = os.path.join(out_folder, "timings.csv")
-    timer.to_frame().to_csv(timings_file, index=False)
+    _final_report("completed")
     print(f"Per-case timings written to '{timings_file}'", flush=True)
+
+    # Machine-readable trailer for wrapper scripts: how many selected cases still
+    # have no output. A chunked driver loop uses this to stop as soon as the work is
+    # finished, instead of paying predictor_init for every remaining iteration
+    remaining = sum(
+        1
+        for f in files
+        if not os.path.exists(os.path.join(out_folder, f"{cid_from_file(f)}_boxes.pkl"))
+    )
+    print(f"REMAINING={remaining}", flush=True)
 
 
 def get_args():
@@ -1055,7 +1558,7 @@ def get_args():
     parser.add_argument(
         "--cfg", help="Postprocessing configuration file", required=True, type=str
     )
-    parser.add_argument("--np", help="Number of parallel workers", default=1, type=int)
+    parser.add_argument("--np", help="Number of parallel workers", default=4, type=int)
     parser.add_argument(
         "--brain_cache",
         help="Folder where TotalSegmentator brain masks are cached (<cid>.nii.gz)",
@@ -1074,6 +1577,44 @@ def get_args():
     parser.add_argument(
         "--totalseg_fast",
         help="Use the 3mm TotalSegmentator model instead of the 1.5mm one",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--save_maps",
+        help=(
+            "Folder to write the predicted time-vessel map of every case as "
+            "<cid>_0001.nii.gz, in the CTA geometry. Use it to compare against the "
+            "precomputed maps the post-processing thresholds were tuned on"
+        ),
+        default="",
+        type=str,
+    )
+    parser.add_argument(
+        "--max_cases",
+        help=(
+            "Process at most this many new cases, then exit cleanly (0 = all). Use it "
+            "to split a run across several short-lived processes when memory grows "
+            "case by case; finished cases are skipped on the next invocation"
+        ),
+        default=0,
+        type=int,
+    )
+    parser.add_argument(
+        "--mem_limit_gb",
+        help=(
+            "Abort a case with a MemoryError if resident memory exceeds this many GiB. "
+            "Set it just below the point where the OOM killer fires so the failure is "
+            "recorded instead of silent (0 disables)"
+        ),
+        default=0.0,
+        type=float,
+    )
+    parser.add_argument(
+        "--keep_going",
+        help=(
+            "Log and skip a case that raises instead of aborting the run. Failed IDs "
+            "are written to <out>/failed_cids.txt for a targeted retry with --i"
+        ),
         action="store_true",
     )
     parser.add_argument(
