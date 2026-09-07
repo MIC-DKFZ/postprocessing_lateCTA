@@ -762,7 +762,6 @@ def case_analysis(
         logger.info("Masking CTA slices that are not present in TTA image...")
         # Determine extreme slices where to trim CTA scan
         low_tta, high_tta = obtain_extreme_slices(array=variation_img, bgd_val=0)
-        print(low_tta, high_tta)
         cta_masking(
             cta_array=cta_array,
             low_slice=low_tta,
