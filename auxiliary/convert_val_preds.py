@@ -21,7 +21,7 @@ from scipy.spatial import cKDTree
 import h5py
 from typing import Union
 from nndet.io.load import load_pickle
-from nndet.core.ops_np import box_iou_np
+from nndet.core.boxes.ops_np import box_iou_np
 import skfmm
 from scipy.spatial.distance import cdist
 

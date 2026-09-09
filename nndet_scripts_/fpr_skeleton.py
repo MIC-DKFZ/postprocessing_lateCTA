@@ -3,7 +3,7 @@ import os, sys
 import argparse
 import SimpleITK as sitk
 import matplotlib.pyplot as plt
-from nndet.core.ops_np import box_iou_np
+from nndet.core.boxes.ops_np import box_iou_np
 from typing import Union
 from scipy.spatial import cKDTree, KDTree
 from scipy.ndimage import (
