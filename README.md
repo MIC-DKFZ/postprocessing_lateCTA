@@ -89,9 +89,8 @@ python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model
 
 ```
 
-# If you want to start from a folder with CTP data and a folder with CTA data
-
-# Required data structure
+# If you want to start from a folder with CTP data and a folder with CTA data. Required data structure:
+```text
 ctp_folder/
 ├── case0/
 │   ├── case0_t_00.nii.gz
@@ -114,6 +113,7 @@ cta_folder/
 ├── case0.nii.gz
 ├── ...
 └── caseM.nii.gz
+```
    
 # 1. CTP-to-CTA registration
 ```
@@ -139,7 +139,8 @@ python utils/resample_time_info.py --time /ctp/time/folder --cta /your/cta/folde
 ```
 
 
-# 3. Time-vessel map extraction (start with the curated CTP folder from Step 2). USE THE TOTALSEG ENV!!
+# 3. Time-vessel map extraction (start with the curated CTP folder from Step 2). 
+USE THE TOTALSEG ENV!!
 Brain segmentations are outputted in the folder under 'skull' argument
 If you have resampled your CTP time files, use the path /resampled/ctp/time/folder for the --time argument
 ```
