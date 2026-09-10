@@ -256,7 +256,7 @@ def get_args():
     parser.add_argument("--o", help="Output folder", required=True, type=str)
     parser.add_argument("--s", help="Train-test split ratio", default=0.2, type=float)
     parser.add_argument("--task", help="Task folder", required=True, type=str)
-    parser.add_argument("--np", help="Workers", default=6, type=int)
+    parser.add_argument("--np", help="Workers", default=4, type=int)
     args = parser.parse_args()
 
     return args
