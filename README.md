@@ -82,7 +82,7 @@ export TOTALSEG_BIN=/path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator
 ## Main commands
 
 # If you already have a trained vessel occlusion detector in nnDetection and a trained CTA-to-time-vessel map generator
-# To access our own nnDetection and generator trained models, contact us for sharing at reasonable enquiry
+To access our own nnDetection and generator trained models, contact us for sharing at reasonable enquiry
 ```
 conda activate ctp-postprocess
 python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model --p /path/to/det_models/TaskXYZ/model_name/foldF/val_or_test_predictions --o /path/to/postprocessed/predictions --cfg fpr_cfg.json --brain_cache /path/to/store/brain/segmentations --totalseg_bin /path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator 
@@ -93,33 +93,36 @@ python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model
 
 # Required data structure
 ctp_folder (including 3D time steps for every case ID as .nii.gz)
-   |__case0
-      |__case0_t_00.nii.gz
-      |__case0_t_01.nii.gz
-      ...
-      |__case0_t_NN.nii.gz
-      
-   ...
+	|__case0
+		|__case0_t_00.nii.gz
+		|__case0_t_01.nii.gz
+		...
+		|__case0_t_NN.nii.gz
+
+   	...
    
-   |__caseM
-      |__caseM_t_00.nii.gz
-      |__caseM_t_01.nii.gz
-      ...
-      |__caseM_t_NN.nii.gz
+	|__caseM
+		|__caseM_t_00.nii.gz
+		|__caseM_t_01.nii.gz
+		...
+		|__caseM_t_NN.nii.gz
       
+
+
 ctp_folder_with_time_information (.npy files with time steps in seconds for each CTP slice acquired)
-   |__case0_AcquisitionDateTime.npy
+	|__case0_AcquisitionDateTime.npy
+
+	...
+
+	|__caseM_AcquisitionDateTime.npy
    
-   ...
-   
-   |__caseM_AcquisitionDateTime.npy
-   
+
 cta_folder
-   |__case0.nii.gz
-   
-   ...
-   
-   |__caseM.nii.gz
+	|__case0.nii.gz
+
+	...
+
+	|__caseM.nii.gz
    
    
 # 1. CTP-to-CTA registration
@@ -128,15 +131,18 @@ conda activate ctp-postprocess
 python register.py --cta /your/cta/folder --ctp /your/ctp/folder --out /registered/ctp/folder
 ```
 
-# 2. CTP curation (start with the output registered CTP folder from Step 1). USE THE TOTALSEG ENV!!
-# It requires a nnU-Net vessel segmentation model, with a folder path in 'config.json' ('mca_cpt'). Right now this field is named as PLACEHOLDER
-# Contact us if you require the model. 
+# 2. CTP curation (start with the output registered CTP folder from Step 1). 
+USE THE TOTALSEG ENV!!
+
+It requires a nnU-Net vessel segmentation model, with a folder path in 'config.json' ('mca_cpt'). Right now this field is named as PLACEHOLDER
+
+Contact us if you require the model. 
 ```
 conda activate ctp-totalseg
 python preprocessing.py --folder /registered/ctp/folder --time /ctp/time/folder --out /curated/ctp/folder
 ```
 
-# If CTP time files (.npy) require resampling after CTP image information curation, run:
+If CTP time files (.npy) require resampling after CTP image information curation, run:
 ```
 conda activate ctp-postprocess
 python utils/resample_time_info.py --time /ctp/time/folder --cta /your/cta/folder --out /resampled/ctp/time/folder
@@ -153,14 +159,14 @@ python extract_tta.py --ctp /curated/ctp/folder --cta /your/cta/folder --time /c
 ```
 
 # 4. Postprocessing constraints application
-# If you have to use the CTA-to-time-vessel map generator model
+If you have to use the CTA-to-time-vessel map generator model
 ```
 conda activate ctp-postprocess
 python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model --p /path/to/det_models/TaskXYZ/model_name/foldF/val_or_test_predictions --o /path/to/postprocessed/predictions --cfg fpr_cfg.json --brain_cache /path/to/store/brain/segmentations --totalseg_bin /path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator 
 
 ```
 
-# If you have already-derived time-vessel maps
+If you have already-derived time-vessel maps
 ```
 conda activate ctp-postprocess
 python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model --t /folder/with/time-vessel-maps --p /path/to/det_models/TaskXYZ/model_name/foldF/val_or_test_predictions --o /path/to/postprocessed/predictions --cfg fpr_cfg.json --brain_cache /path/to/store/brain/segmentations --totalseg_bin /path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator 
@@ -205,12 +211,12 @@ nnUNetv2_train TASK_ID 3d_fullres all -p nnUNetResEncUNetLPlans -tr nnUNetRegres
 ```
 
 # 5.5 Inference
-# If test data is raw and has not been processed by prepare_raw_data_generator.py, prepare inference data by masking out non-brain voxels with -1024 HU
+If test data is raw and has not been processed by prepare_raw_data_generator.py, prepare inference data by masking out non-brain voxels with -1024 HU
 ```
 conda activate ctp-postprocess
 python utils/obtain_brainProd_images.py --i /raw/CTA/folder --b /folder/where/to/store/brain/segmentations --o /folder/with/processed/inference/data
 ```
-# nnU-Net inference
+nnU-Net inference
 ```
 conda activate ctp-postprocess
 python Skeleton-Recall/nnunetv2/utilities/predict_folder.py --d /folder/with/processed/inference/data --o /folder/with/output/predictions --m /folder/with/generator/model/DatasetXYZ/nnUNetRegressionTrainer__nnUNetResEncUNetLPlans__3d_fullres --b /folder/where/to/store/brain/segmentations --cfg params_generator.json
