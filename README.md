@@ -92,38 +92,28 @@ python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model
 # If you want to start from a folder with CTP data and a folder with CTA data
 
 # Required data structure
-ctp_folder (including 3D time steps for every case ID as .nii.gz)
-	|__case0
-		|__case0_t_00.nii.gz
-		|__case0_t_01.nii.gz
-		...
-		|__case0_t_NN.nii.gz
+ctp_folder/
+├── case0/
+│   ├── case0_t_00.nii.gz
+│   ├── case0_t_01.nii.gz
+│   ├── ...
+│   └── case0_t_NN.nii.gz
+├── ...
+└── caseM/
+    ├── caseM_t_00.nii.gz
+    ├── caseM_t_01.nii.gz
+    ├── ...
+    └── caseM_t_NN.nii.gz
 
-   	...
-   
-	|__caseM
-		|__caseM_t_00.nii.gz
-		|__caseM_t_01.nii.gz
-		...
-		|__caseM_t_NN.nii.gz
-      
+ctp_folder_with_time_information/
+├── case0_AcquisitionDateTime.npy
+├── ...
+└── caseM_AcquisitionDateTime.npy
 
-
-ctp_folder_with_time_information (.npy files with time steps in seconds for each CTP slice acquired)
-	|__case0_AcquisitionDateTime.npy
-
-	...
-
-	|__caseM_AcquisitionDateTime.npy
-   
-
-cta_folder
-	|__case0.nii.gz
-
-	...
-
-	|__caseM.nii.gz
-   
+cta_folder/
+├── case0.nii.gz
+├── ...
+└── caseM.nii.gz
    
 # 1. CTP-to-CTA registration
 ```
