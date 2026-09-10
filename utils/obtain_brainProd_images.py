@@ -58,9 +58,9 @@ def iterate(
             brain = sitk.GetArrayFromImage(sitk.ReadImage(brain_file))
             outimg = img.copy()
             outimg[brain == 0] = -1024
-            extremes = extreme_slices(segmentation=brain)
+            # extremes = extreme_slices(segmentation=brain)
 
-            outimg = outimg[extremes[0] : (extremes[-1] + 1)]
+            # outimg = outimg[extremes[0] : (extremes[-1] + 1)]
             outimage = sitk.GetImageFromArray(outimg)
             outimage.SetSpacing(image.GetSpacing())
             outimage.SetDirection(image.GetDirection())
