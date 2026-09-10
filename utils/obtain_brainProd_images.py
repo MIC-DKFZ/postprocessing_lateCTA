@@ -70,15 +70,11 @@ def iterate(
 
 def main(args):
     infolder = args.i
-    case_id_folder = args.c
     brain_folder = args.b
     outfolder = args.o
     workers = args.np
 
     assert os.path.exists(infolder), f"Input folder '{infolder}' does not exist"
-    assert os.path.exists(
-        case_id_folder
-    ), f"Case ID folder '{case_id_folder}' does not exist"
     assert os.path.exists(
         brain_folder
     ), f"Brain segmentation folder '{brain_folder}' does not exist"
@@ -92,7 +88,7 @@ def main(args):
         os.makedirs(outfolder)
 
     # Iterate through files
-    infiles = sorted(os.listdir(case_id_folder))
+    infiles = sorted(os.listdir(infolder))
     Parallel(n_jobs=workers)(
         delayed(iterate)(infolder, infile, brain_folder, outfolder)
         for infile in infiles
@@ -104,7 +100,6 @@ def get_args():
     # Prepare data for Amsterdam project translation model (brain X images)
     parser = argparse.ArgumentParser()
     parser.add_argument("--i", help="Input folder", required=True, type=str)
-    parser.add_argument("--c", help="Case ID folder", required=True, type=str)
     parser.add_argument("--b", help="Brain segm folder", required=True, type=str)
     parser.add_argument("--o", help="Output folder", required=True, type=str)
     parser.add_argument("--np", help="Parallel workers", default=4, type=int)
