@@ -355,7 +355,7 @@ def get_args():
     parser.add_argument(
         "--b", help="Folder with brain information", required=True, type=str
     )
-    parser.add_argument("--w", help="Number of parallel workers", default=6, type=int)
+    parser.add_argument("--w", help="Number of parallel workers", default=4, type=int)
     parser.add_argument(
         "--bin",
         help="Number of bins to structure time information",
