@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 German Cancer Research Center (DKFZ) and contributors.
+# SPDX-License-Identifier: Apache-2.0
+
 import matplotlib.pyplot as plt
 import numpy as np
 from batchgenerators.utilities.file_and_folder_operations import load_json

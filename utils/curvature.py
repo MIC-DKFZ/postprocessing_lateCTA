@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 German Cancer Research Center (DKFZ) and contributors.
+# SPDX-License-Identifier: Apache-2.0
+
 import numpy as np
 import os,sys
 from scipy.signal import find_peaks, peak_prominences

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 German Cancer Research Center (DKFZ) and contributors.
+# SPDX-License-Identifier: Apache-2.0
+
 import pandas as pd
 import os,sys
 import numpy as np

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2026 German Cancer Research Center (DKFZ) and contributors.
+# SPDX-License-Identifier: Apache-2.0
+
 import SimpleITK as sitk
 
 def set_parameters(method='euler', DefaultPixelValue=0, metric='AdvancedMattesMutualInformation'):
