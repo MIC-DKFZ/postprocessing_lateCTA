@@ -113,16 +113,3 @@ def segment_brain(img) -> Union[np.ndarray, np.ndarray, np.ndarray]:
 
     return brain_segm, skull_segm, cca_segm
 
-
-
-
-
-
-folder = "/scratch/amartinezmora/raw_data/ctp/mrclean_late_30002"
-#outfile = "/scratch/amartinezmora/preprocessed/ctp/mrclean_late_30002_sum.nii.gz"
-outfile = "/scratch/amartinezmora/raw_data/ctp/mrclean_late_30002/mrclean_late_30002_t_20.nii.gz"
-outfile_ica = "/scratch/amartinezmora/preprocessed/ctp/mrclean_late_30002_ica.nii.gz"
-#sum_ctp(folder=folder, outfile=outfile)
-
-if __name__ == '__main__':
-    segment_ica(input_file=outfile, outfile = outfile_ica)

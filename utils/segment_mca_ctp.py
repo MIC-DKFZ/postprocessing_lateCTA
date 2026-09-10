@@ -51,30 +51,7 @@ class predictionAlgorithm:
            save_or_return_probabilities=True,
        )
 
-    # def predict_array(self, image_ct):
-
 
        return ret, probs
-
-
-
-
-if __name__ == "__main__":
-   train_dir = "/scratch/amartinezmora/det_models/Dataset870_TopCoW24/nnUNetTrainerSkeletonRecallNoMirroring__nnUNetPlans__3d_fullres"
-   img_file = "/scratch/amartinezmora/preprocessed/ctp/mrclean_late_30002_sum.nii.gz"
-   segm_file = "/scratch/amartinezmora/preprocessed/ctp/mrclean_late_30002_mca.nii.gz"
-   #prob_file = "/home/a870a/0024_0000_prob_topcow"
-
-
-   img = sitk.ReadImage(img_file)
-   img_array = sitk.GetArrayFromImage(img)
-   out, probs = predictionAlgorithm(train_dir=train_dir).predict(image_ct=img)
-   #print(np.unique(out))
-   out1 = (out > 4).astype(float)
-   out2 = (out < 8).astype(float)
-   out_mca = (out1*out2).astype(float)
-   outimg = sitk.GetImageFromArray(out_mca.astype(float))
-   outimg.CopyInformation(img)
-   sitk.WriteImage(outimg, segm_file)
 
 

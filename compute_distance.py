@@ -17,8 +17,6 @@ import matplotlib.pyplot as plt
 from compute_phase import apply_window
 from utils.load_save import load_data, write_data
 
-# from utils.segment_carotid_ctp import segment_brain
-
 
 def distance_map(img: np.ndarray, val: float, spacing: np.ndarray):
     """
@@ -215,13 +213,6 @@ def process_file(
 
         # Obtain distance map
         final = distance_map_full(img=img, spacing=spacing)
-
-        # cid = os.path.basename(time_file).replace("_norm.nii.gz", "")
-        # cid = os.path.basename(time_file).replace(".nii.gz", "")
-        # distfile = os.path.join(
-        #    "/scratch/amartinezmora/preprocessed/distance_maps_full", f"{cid}.nii.gz"
-        # )
-        # final = sitk.GetArrayFromImage(sitk.ReadImage(distfile))
 
         if not (norm) and norm_stats is None:
             # Save final result
