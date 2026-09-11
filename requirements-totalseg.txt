@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright 2026 German Cancer Research Center (DKFZ) and contributors.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Direct pip-installable dependencies for the `ctp-totalseg` conda
+# environment. This file intentionally does NOT cover torch / torchvision
+# (needs a CUDA-build pin matched to your driver, see README.md) — install
+# those first, then run:
+#   pip install -r requirements-totalseg.txt
+
+TotalSegmentator==2.18.0

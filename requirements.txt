@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 German Cancer Research Center (DKFZ) and contributors.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Direct pip-installable dependencies for the `ctp-postprocess` conda
+# environment. This file intentionally does NOT cover:
+#   - torch / torchvision / torchaudio (needs a CUDA-specific --index-url,
+#     see README.md)
+#   - nnDetection (needs a git clone + a compiled CUDA build with
+#     --no-build-isolation --no-deps, see README.md)
+#   - Skeleton-recall (local editable install: `pip install -e ./Skeleton-recall`)
+#   - SimpleITK-SimpleElastix (must be installed LAST, after Skeleton-recall,
+#     see README.md for why)
+# Install those first per README.md, then run:
+#   pip install -r requirements.txt
+
+setuptools<81
+pytorch_lightning>=1.3.1,<=1.4.2
+torchmetrics>=0.7.0,<=0.7.3
+batchgenerators==0.25.3
+nnunet==1.7.1
+scipy==1.15.3
+scikit-learn==1.7.2
+scikit-image==0.25.2
+pandas==2.3.3
+nevergrad==1.0.12
+dicom2nifti==2.6.2
+medpy==0.5.2
+loguru==0.7.3
+hydra-core>=1.1.0
+mlflow==3.16.0
+GitPython==3.1.62
+matplotlib==3.10.9
+seaborn==0.13.2
+python-gdcm<3.0.26
+scikit-fmm==2025.6.23
+nibabel==5.4.2
+pydicom==3.0.2
+tifffile==2025.5.10
+tqdm==4.70.0
+h5py==3.16.0
+joblib==1.6.0
+xmltodict==1.0.4
+PyYAML==6.0.3
+iterative-stratification==0.1.9
+blosc2==4.3.3
+einops==0.8.2
+git+https://github.com/mibaumgartner/pytorch_model_summary.git
