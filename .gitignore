@@ -3,6 +3,8 @@
 */pycache
 *.nii.gz
 *.txt
+!requirements.txt
+!requirements-totalseg.txt
 *.gif
 *.png
 utils/__pycache__/load_save.cpython-310.pyc
