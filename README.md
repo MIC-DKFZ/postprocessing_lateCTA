@@ -10,71 +10,57 @@ Martínez Mora, A.; Mojtahedi, M.; de Vries, L.; Baumgartner, M.; Kirchhoff, Y.;
 ## Purpose
 Post-processing repository for vessel occlusion detection in late-phase CTA, tested with nnDetection-like models. The code has an end-to-end script that segments the brain from CTA images, infers time-vessel maps from CTA images with a modified nnU-Net skeleton-recall based module, and accesses nnDetection predictions to remove implausible detected boxes based on:
 - R1: boxes far from skeletonized vessel tips, based on a voxel radius threshold in "fpr_cfg.json" (field "tip_radius") are removed.
-- R2: boxes in late-enhanced vessels, with a relative time of arrival over a maximum threshold in fpr_cfg.json (field "t_high_percentile") and under a minimum threshold (field "t_low_percentile") in the viccinity of the time-vessel map are removed.
+- R2: boxes in late-enhanced vessels, with a relative time of arrival over a maximum threshold in fpr_cfg.json (field "t_high_percentile") and under a minimum threshold (field "t_low_percentile") in the vicinity of the time-vessel map are removed.
 - R3: boxes exceeding superior or posterior positions relative to the brain centroid, specified in fpr_cfg.json (field "relative_brain_pos") are removed 
 - R4: boxes with a too small or too large overall volume are removed (fields "min_volume" and "max_volume" in fpr_cfg.json)
 Resulting boxes are saved in an alternative folder of your choice.
 
-The repository also offers step-by step execution, following this roadmap:
+The repository also offers step-by-step execution, following this roadmap. Numbers match the steps under [Main commands](#main-commands):
 
+```text
+     Raw CTP + CTA                                  CTA only
+           │                                           │
+           ▼                                           │
+┌──────────────────────┐                               │
+│ 1. CTP → CTA         │                               │
+│    registration      │                               │
+│    register.py       │                               │
+└──────────┬───────────┘                               │
+           ▼                                           │
+┌──────────────────────┐                               │
+│ 2. CTP curation      │                               │
+│    preprocessing.py  │                               │
+└──────────┬───────────┘                               ▼
+           ▼                                ┌──────────────────────┐
+┌──────────────────────┐      trains        │ 5. CTA → time–vessel │
+│ 3. CTP time–vessel   ├───────────────────►│    map generator     │
+│    maps              │                    │    (Skeleton-recall) │
+│    extract_tta.py    │                    └──────────┬───────────┘
+└──────────┬───────────┘                               │ predicted
+           │           ┌─────────────────────┐         │ maps
+           │           │ nnDetection         │         │
+           │           │ occlusion boxes     │         │
+           │           └──────────┬──────────┘         │
+           │                      │                    │
+           └──────────────────────┼────────────────────┘
+                                  ▼
+               ┌─────────────────────────────────────┐
+               │ 4. Anatomical & temporal            │
+               │    constraints R1–R4                │
+               │    (+ TotalSegmentator brain mask)  │
+               │    postprocess_end2end.py           │
+               └──────────────────┬──────────────────┘
+                                  ▼
+               ┌─────────────────────────────────────┐
+               │ Post-processed occlusion detections │
+               └─────────────────────────────────────┘
+```
 
-                         ┌──────────────────────┐
-                         │      Raw CTP         │
-                         │       data           │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │  CTP → CTA           │
-                         │  registration        │
-                         │    register.py       │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │   CTP curation &     │
-                         │    preprocessing     │
-                         │  preprocessing.py    │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │  Time-to-vessel      │
-                         │       maps           │
-                         │  extract_tta.py      │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │ CTA → time-vessel    │
-                         │ map prediction       │
-                         │ Skeleton-Recall      │
-                         └──────────┬───────────┘
-                                    │
-                                    │
-                                    ▼
- ┌──────────────────────┐   ┌──────────────────────┐
- │  CTA vessel-occlusion│   │ Predicted time-vessel│
- │      detector        │   │        maps          │
- │     predictions      │   └──────────┬───────────┘
- └──────────┬───────────┘              │
-            │                          │
-            └────────────┬─────────────┘
-                         ▼
-              ┌─────────────────────────┐
-              │  Anatomical & temporal  │
-              │       constraints       │
-              │                         │
-              │ fpr_skeleton.py /       │
-              │ postprocess_end2end.py  │
-              └────────────┬────────────┘
-                           │
-                           ▼
-              ┌─────────────────────────┐
-              │  Postprocessed vessel   │
-              │       occlusions        │
-              └─────────────────────────┘
-              
+Time–vessel maps reach the constraints (step 4) in one of two ways:
+- **With CTP:** derived from the registered and curated CTP scan (steps 1–3) and passed with `--tta_maps`.
+- **CTA only:** predicted from the CTA by the generator (step 5), which is trained on the CTP-derived maps.
+
+`fpr_skeleton.py` applies the same constraints to precomputed time–vessel maps and brain masks, and is used during development.
 
 ## Installation
 
