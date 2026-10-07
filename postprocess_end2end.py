@@ -804,7 +804,6 @@ def smooth_time(
     labels = labels[sizes >= size_thr]
 
     if labels.shape[0] == 0:
-        # Too harsh filtering applied for connected components
         # Apply directly map filtering
         smoothed = median_filter(
             input=time_map.astype(np.float32, copy=False), size=median_filter_size
@@ -823,12 +822,6 @@ def smooth_time(
     label_mask = np.where(keep_mask, label_time, 0).astype(np.int32, copy=False)
     del keep_mask
 
-    # smoothed_mask = (smoothed > 0).astype(int)
-
-    # Apply median filter to time image
-    # smoothed = apply_masked_median_filter(image=smoothed,
-    #                                       mask=smoothed_mask,
-    #                                       size=median_filter_size)
     # Release the label volume before median_filter allocates its own output
     del label_time, time_mask
     smoothed = median_filter(input=smoothed, size=median_filter_size)
@@ -1020,7 +1013,7 @@ def filter_out_fps(
     ratio = keep.sum() / (boxes.shape[0] + np.finfo(float).eps)
 
     if ratio < 0.05:
-        # If less than 10% of boxes are remaining, we may be removing true positives
+        # If less than 5% of boxes are remaining, we may be removing true positives
         # Keep the boxes with the top scores. Avoid complete removal of boxes
         ind_remove = np.where(keep == False)[0]
         scores_remove = scores[ind_remove]
@@ -1122,7 +1115,7 @@ def process_case(
         keep_box = []
 
         # Iterate through each box
-        for box, score, l in zip(boxes, scores, labels):
+        for box in boxes:
             # Derive patch of interest around every box, enlarge twice box size
             coords = derive_patch_coords(box=box, shape=skeleton.shape)
             # Derive center of patch
