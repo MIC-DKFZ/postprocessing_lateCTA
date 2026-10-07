@@ -7,7 +7,6 @@ Per-stage wall-clock and memory timing, streamed to a CSV file
 
 import csv
 import os
-import resource
 import shutil
 import time
 from contextlib import contextmanager
@@ -15,6 +14,8 @@ from datetime import datetime
 
 import pandas as pd
 import torch
+
+from utils.resource_monitor import peak_rss_gb, rss_gb
 
 
 # Column layout of the timings CSV
@@ -145,24 +146,6 @@ class StageTimer:
                 pass
             self._fh, self._writer = None, None
 
-    @staticmethod
-    def rss_gb() -> float:
-        """Current resident set size of this process, in GiB"""
-        try:
-            with open("/proc/self/statm", "r") as f:
-                pages = int(f.read().split()[1])
-            return pages * os.sysconf("SC_PAGE_SIZE") / 2**30
-        except Exception:
-            return float("nan")
-
-    @staticmethod
-    def peak_rss_gb() -> float:
-        """Peak RSS of this process since it started, in GiB (monotonic)"""
-        try:
-            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20
-        except Exception:
-            return float("nan")
-
     def _sync(self):
         # CUDA kernels are launched asynchronously: without a sync, a GPU stage
         # would report only the time spent queueing the work
@@ -209,8 +192,8 @@ class StageTimer:
             "cid": cid,
             "stage": stage,
             "seconds": seconds,
-            "rss_gb": self.rss_gb(),
-            "peak_rss_gb": self.peak_rss_gb(),
+            "rss_gb": rss_gb(),
+            "peak_rss_gb": peak_rss_gb(),
             "status": status,
             "error": error,
         }

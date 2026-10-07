@@ -27,6 +27,8 @@ from utils.resource_monitor import (
     check_memory_headroom,
     count_children,
     count_open_fds,
+    peak_rss_gb,
+    rss_gb,
     system_memory_gb,
 )
 from utils.stage_timer import StageTimer
@@ -961,7 +963,7 @@ def main(args):
 
             print(
                 f"    case time: {time.perf_counter() - case_t0:.2f}s"
-                f" | RSS {timer.rss_gb():.2f} GB (peak {timer.peak_rss_gb():.2f} GB)"
+                f" | RSS {rss_gb():.2f} GB (peak {peak_rss_gb():.2f} GB)"
                 f" | children {count_children()} | fds {count_open_fds()}",
                 flush=True,
             )

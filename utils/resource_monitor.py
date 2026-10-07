@@ -7,10 +7,27 @@ from /proc so that leaks across cases can be spotted and OOM kills avoided
 """
 
 import os
+import resource
 
 import numpy as np
 
-from utils.stage_timer import StageTimer
+
+def rss_gb() -> float:
+    """Current resident set size of this process, in GiB"""
+    try:
+        with open("/proc/self/statm", "r") as f:
+            pages = int(f.read().split()[1])
+        return pages * os.sysconf("SC_PAGE_SIZE") / 2**30
+    except Exception:
+        return float("nan")
+
+
+def peak_rss_gb() -> float:
+    """Peak RSS of this process since it started, in GiB (monotonic)"""
+    try:
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20
+    except Exception:
+        return float("nan")
 
 
 def count_children() -> int:
@@ -21,15 +38,12 @@ def count_children() -> int:
     are not reaped between cases they accumulate, and each one holds its own copy of
     the volume it was handed, so host memory grows case by case.
     """
+    pid = os.getpid()
     try:
-        return len(os.listdir(f"/proc/{os.getpid()}/task")) and len(
-            [
-                p
-                for p in os.listdir("/proc")
-                if p.isdigit() and _ppid_of(int(p)) == os.getpid()
-            ]
+        return sum(
+            1 for p in os.listdir("/proc") if p.isdigit() and _ppid_of(int(p)) == pid
         )
-    except Exception:
+    except OSError:
         return -1
 
 
@@ -75,7 +89,7 @@ def check_memory_headroom(limit_gb: float, cid: str = "-") -> None:
     """
     if limit_gb is None or limit_gb <= 0:
         return
-    rss = StageTimer.rss_gb()
+    rss = rss_gb()
     if np.isfinite(rss) and rss > limit_gb:
         raise MemoryError(
             f"RSS {rss:.2f} GB exceeded the --mem_limit_gb ceiling of {limit_gb:.2f} GB "
