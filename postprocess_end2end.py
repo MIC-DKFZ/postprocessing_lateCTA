@@ -70,6 +70,13 @@ def cid_from_file(file: os.PathLike) -> str:
     return os.path.basename(str(file)).replace(CHANNEL_SUFFIX, "")
 
 
+def tta_map_file(tta_maps: os.PathLike, cid: str) -> str:
+    """Path of the time-vessel map of a case, or '' if no map folder is given"""
+    if len(tta_maps) == 0:
+        return ""
+    return os.path.join(tta_maps, f"{cid}_0001.nii.gz")
+
+
 def load_case_ids(id_file: os.PathLike = "") -> set:
     """
     Read the set of case identifiers to process from a TXT file
@@ -96,7 +103,9 @@ def load_case_ids(id_file: os.PathLike = "") -> set:
     assert os.path.exists(id_file), f"ID file '{id_file}' does not exist"
     assert str(id_file).endswith(".txt"), f"ID file '{id_file}' is not a .txt file"
 
-    # Read case IDs line by line
+    # NOTE: read line by line rather than with np.loadtxt. A one-line file makes
+    # np.loadtxt return a 0-d array whose .tolist() is a bare string, and 'cid in ids'
+    # would then silently become a substring test instead of a membership test
     with open(id_file, "r") as f:
         raw = [line.strip() for line in f]
 
@@ -1225,7 +1234,9 @@ def main(args):
     id_file = args.i  # file with specific IDs to postprocess
 
     assert os.path.exists(data_folder), f"Data folder '{data_folder}' does not exist"
-    assert os.path.exists(model_folder), f"Model folder '{model_folder}' does not exist"
+    assert (len(model_folder) == 0) or os.path.exists(
+        model_folder
+    ), f"Model folder '{model_folder}' does not exist"
     assert os.path.exists(
         pred_folder
     ), f"Prediction folder '{pred_folder}' does not exist"
@@ -1257,10 +1268,10 @@ def main(args):
     if len(tta_maps) > 0:
         os.makedirs(tta_maps, exist_ok=True)
         print(
-            f"Saving predicted time-vessel maps to '{tta_maps}', if they do not exist."
-            "NOTE: cases whose "
-            "output already exists are skipped before inference, so clear the output "
-            "folder (or use a fresh one) to get a map for every case",
+            f"Loading time-vessel maps from '{tta_maps}' where they exist, and saving "
+            "predicted maps there otherwise. NOTE: cases whose output already exists "
+            "are skipped before inference, so clear the output folder (or use a fresh "
+            "one) to get a map for every case",
             flush=True,
         )
 
@@ -1338,36 +1349,46 @@ def main(args):
         timer=timer,
     )
 
-    # Load postprocessing parameters for time-vessel map estimation
-    params_file = os.path.join(model_folder, "best_dist_logit_cutoff.json")
-    assert os.path.exists(
-        params_file
-    ), f"Post processing parameter file '{params_file}' does not exist"
-    params = load_json(params_file)
+    # The generator is only needed for cases without a precomputed time-vessel map
+    needs_prediction = any(
+        not os.path.exists(tta_map_file(tta_maps, cid_from_file(f))) for f in files
+    )
+    if needs_prediction:
+        assert len(model_folder) > 0, (
+            "Some cases have no precomputed time-vessel map in --tta_maps, so the "
+            "generator model folder (--m) is required"
+        )
 
-    # Initialize predictor for CTA-to-time-vessel map generator
-    with timer("predictor_init"):
-        predictor = nnUNetPredictor_regression(
-            tile_step_size=0.5,
-            use_gaussian=True,
-            use_mirroring=True,
-            perform_everything_on_device=True,
-            device=torch.device("cuda", 0),
-            verbose=False,
-            verbose_preprocessing=False,
-            allow_tqdm=True,
-        )
-        predictor.initialize_from_trained_model_folder(
-            model_folder,
-            use_folds=("all",),
-            checkpoint_name=f"checkpoint_{mode.lower().strip()}.pth",
-        )
+        # Load postprocessing parameters for time-vessel map estimation
+        params_file = os.path.join(model_folder, "best_dist_logit_cutoff.json")
+        assert os.path.exists(
+            params_file
+        ), f"Post processing parameter file '{params_file}' does not exist"
+        params = load_json(params_file)
+
+        # Initialize predictor for CTA-to-time-vessel map generator
+        with timer("predictor_init"):
+            predictor = nnUNetPredictor_regression(
+                tile_step_size=0.5,
+                use_gaussian=True,
+                use_mirroring=True,
+                perform_everything_on_device=True,
+                device=torch.device("cuda", 0),
+                verbose=False,
+                verbose_preprocessing=False,
+                allow_tqdm=True,
+            )
+            predictor.initialize_from_trained_model_folder(
+                model_folder,
+                use_folds=("all",),
+                checkpoint_name=f"checkpoint_{mode.lower().strip()}.pth",
+            )
 
     # iterate through the selected files: time-vessel map estimation + postprocessing
     n_ok, n_failed, n_done, failed_cids = 0, 0, 0, []
     for i, file in enumerate(files):
         cid = cid_from_file(file)  # Case ID
-        tta_file = os.path.join(tta_maps, f"{cid}_0001.nii.gz")  # Time-vessel map file
+        tta_file = tta_map_file(tta_maps, cid)  # Time-vessel map file ('' if none)
         full_file = os.path.join(data_folder, file)  # Image file
 
         # Skip completed cases BEFORE any work. process_case has its own check, but it
@@ -1455,6 +1476,8 @@ def main(args):
                         f"Brain mask shape {brain.shape} does not match image shape "
                         f"{time_vessel_map.shape[1:]} for case '{cid}'"
                     )
+                    # read_images returns (c, z, y, x); downstream expects (z, y, x)
+                    time_vessel_map = time_vessel_map[0]
 
             check_memory_headroom(mem_limit_gb, cid)
 
@@ -1542,8 +1565,11 @@ def get_args():
     parser.add_argument("--d", help="Data folder (CTA)", required=True, type=str)
     parser.add_argument(
         "--m",
-        help="Model folder (CTA-to-time-vessel map generator)",
-        required=True,
+        help=(
+            "Model folder (CTA-to-time-vessel map generator). Only required if some "
+            "cases have no precomputed time-vessel map in --tta_maps"
+        ),
+        default="",
         type=str,
     )
     parser.add_argument(

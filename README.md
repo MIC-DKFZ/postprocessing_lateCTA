@@ -228,7 +228,7 @@ python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model
 
 ```
 
-If you have already-derived time-vessel maps
+If you have already-derived time-vessel maps (named `<case>_0001.nii.gz`), pass their folder with `--tta_maps`. Maps found there are loaded instead of predicted, and missing ones are predicted and saved there. `--m` can be omitted if every case already has a map.
 ```
 conda activate ctp-postprocess
 python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model --tta_maps /folder/with/time-vessel-maps --p /path/to/det_models/TaskXYZ/model_name/foldF/val_or_test_predictions --o /path/to/postprocessed/predictions --cfg fpr_cfg.json --brain_cache /path/to/store/brain/segmentations --totalseg_bin /path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator 
