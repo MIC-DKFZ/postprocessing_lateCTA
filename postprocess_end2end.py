@@ -96,9 +96,7 @@ def load_case_ids(id_file: os.PathLike = "") -> set:
     assert os.path.exists(id_file), f"ID file '{id_file}' does not exist"
     assert str(id_file).endswith(".txt"), f"ID file '{id_file}' is not a .txt file"
 
-    # NOTE: read line by line rather than with np.loadtxt. A one-line file makes
-    # np.loadtxt return a 0-d array whose .tolist() is a bare string, and 'cid in ids'
-    # would then silently become a substring test instead of a membership test
+    # Read case IDs line by line
     with open(id_file, "r") as f:
         raw = [line.strip() for line in f]
 
@@ -1170,10 +1168,10 @@ def process_case(
                     print(center_physical, brain_centroid_physical, brain_size)
 
                 if (
-                    (box_vector[0] < -0.3)
-                    or (box_vector[0] > 0.1)
-                    or (box_vector[1] < -0.35)
-                    or (box_vector[1] > 0.1)
+                    (box_vector[0] < cfg["relative_brain_pos"][0])
+                    or (box_vector[0] > cfg["relative_brain_pos"][1])
+                    or (box_vector[1] < cfg["relative_brain_pos"][2])
+                    or (box_vector[1] > cfg["relative_brain_pos"][3])
                 ):
                     keep = False
 
@@ -1222,7 +1220,7 @@ def main(args):
     totalseg_device = args.totalseg_device  # Device for TotalSegmentator
     keep_going = args.keep_going  # Continue after a failing case
     mem_limit_gb = args.mem_limit_gb  # RSS ceiling per case (0 disables)
-    save_maps = args.save_maps  # Folder for predicted time-vessel maps ('' disables)
+    tta_maps = args.tta_maps  # Folder for predicted time-vessel maps ('' disables)
     max_cases = args.max_cases  # Process at most this many new cases (0 = all)
     id_file = args.i  # file with specific IDs to postprocess
 
@@ -1256,10 +1254,11 @@ def main(args):
     timer.attach_csv(timings_file, resume=True)
     print(f"Streaming timings to '{timings_file}' (run_id {timer.run_id})", flush=True)
 
-    if len(save_maps) > 0:
-        os.makedirs(save_maps, exist_ok=True)
+    if len(tta_maps) > 0:
+        os.makedirs(tta_maps, exist_ok=True)
         print(
-            f"Saving predicted time-vessel maps to '{save_maps}'. NOTE: cases whose "
+            f"Saving predicted time-vessel maps to '{tta_maps}', if they do not exist."
+            "NOTE: cases whose "
             "output already exists are skipped before inference, so clear the output "
             "folder (or use a fresh one) to get a map for every case",
             flush=True,
@@ -1367,8 +1366,9 @@ def main(args):
     # iterate through the selected files: time-vessel map estimation + postprocessing
     n_ok, n_failed, n_done, failed_cids = 0, 0, 0, []
     for i, file in enumerate(files):
-        cid = cid_from_file(file)
-        full_file = os.path.join(data_folder, file)
+        cid = cid_from_file(file)  # Case ID
+        tta_file = os.path.join(tta_maps, f"{cid}_0001.nii.gz")  # Time-vessel map file
+        full_file = os.path.join(data_folder, file)  # Image file
 
         # Skip completed cases BEFORE any work. process_case has its own check, but it
         # only fires after inference has already run, so a resumed run would repeat
@@ -1412,38 +1412,48 @@ def main(args):
                 )
                 brain = sitk.GetArrayFromImage(brain_img).astype(np.uint8)
 
-            with timer("prepare_input", cid):
-                img, props = SimpleITKIO().read_images([full_file])
-                assert brain.shape == img.shape[1:], (
-                    f"Brain mask shape {brain.shape} does not match image shape "
-                    f"{img.shape[1:]} for case '{cid}'"
-                )
-                ind = np.where(brain == 0)
-                img[0, ind[0], ind[1], ind[2]] = (
-                    -1024.0
-                )  # Set background outside brain vessels to -1024
+            if not (os.path.exists(tta_file)):
+                with timer("prepare_input", cid):
+                    img, props = SimpleITKIO().read_images([full_file])
+                    assert brain.shape == img.shape[1:], (
+                        f"Brain mask shape {brain.shape} does not match image shape "
+                        f"{img.shape[1:]} for case '{cid}'"
+                    )
+                    ind = np.where(brain == 0)
+                    img[0, ind[0], ind[1], ind[2]] = (
+                        -1024.0
+                    )  # Set background outside brain vessels to -1024
 
-            check_memory_headroom(mem_limit_gb, cid)
-            with timer("inference", cid):
-                iterator = predictor.get_data_iterator_from_raw_npy_data(
-                    [img], None, [props], None, workers
-                )
-                r = predictor.predict_from_data_iterator(iterator, False, 1)
+                check_memory_headroom(mem_limit_gb, cid)
+                with timer("inference", cid):
+                    iterator = predictor.get_data_iterator_from_raw_npy_data(
+                        [img], None, [props], None, workers
+                    )
+                    r = predictor.predict_from_data_iterator(iterator, False, 1)
 
-            # Postprocess time-vessel map with distance, time and segmentation heads
-            with timer("postprocess_preds", cid):
-                time_vessel_map = postprocess_preds(
-                    pred=r[0], params=params, brain=brain
-                )
+                # Postprocess time-vessel map with distance, time and segmentation heads
+                with timer("postprocess_preds", cid):
+                    time_vessel_map = postprocess_preds(
+                        pred=r[0], params=params, brain=brain
+                    )
 
-            # Optionally persist the predicted map for threshold recalibration
-            if len(save_maps) > 0:
-                with timer("save_time_vessel_map", cid):
-                    save_time_vessel_map(
-                        time_map=time_vessel_map,
-                        image_ref=image,
-                        out_folder=save_maps,
-                        cid=cid,
+                # Optionally persist the predicted map for threshold recalibration
+                if len(tta_maps) > 0:
+                    with timer("save_time_vessel_map", cid):
+                        save_time_vessel_map(
+                            time_map=time_vessel_map,
+                            image_ref=image,
+                            out_folder=tta_maps,
+                            cid=cid,
+                        )
+
+            else:
+                # Directly load time-vessel map file, skip complete prediction
+                with timer("read_time_vessel_map", cid):
+                    time_vessel_map, props = SimpleITKIO().read_images([tta_file])
+                    assert brain.shape == time_vessel_map.shape[1:], (
+                        f"Brain mask shape {brain.shape} does not match image shape "
+                        f"{time_vessel_map.shape[1:]} for case '{cid}'"
                     )
 
             check_memory_headroom(mem_limit_gb, cid)
@@ -1576,11 +1586,12 @@ def get_args():
         action="store_true",
     )
     parser.add_argument(
-        "--save_maps",
+        "--tta_maps",
         help=(
             "Folder to write the predicted time-vessel map of every case as "
             "<cid>_0001.nii.gz, in the CTA geometry. Use it to compare against the "
-            "precomputed maps the post-processing thresholds were tuned on"
+            "precomputed maps the post-processing thresholds were tuned on. If "
+            "maps pre-exist, they are not computed"
         ),
         default="",
         type=str,
