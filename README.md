@@ -212,7 +212,7 @@ python utils/obtain_brainProd_images.py --i /raw/CTA/folder --b /folder/where/to
 nnU-Net inference
 ```
 conda activate ctp-postprocess
-python Skeleton-Recall/nnunetv2/utilities/predict_folder.py --d /folder/with/processed/inference/data --o /folder/with/output/predictions --m /folder/with/generator/model/DatasetXYZ/nnUNetRegressionTrainer__nnUNetResEncUNetLPlans__3d_fullres --b /folder/where/to/store/brain/segmentations --cfg params_generator.json
+python Skeleton-recall/nnunetv2/utilities/predict_folder.py --d /folder/with/processed/inference/data --o /folder/with/output/predictions --m /folder/with/generator/model/DatasetXYZ/nnUNetRegressionTrainer__nnUNetResEncUNetLPlans__3d_fullres --b /folder/where/to/store/brain/segmentations --cfg params_generator.json
 
 ```
 
