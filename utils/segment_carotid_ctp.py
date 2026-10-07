@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright 2026 German Cancer Research Center (DKFZ) and contributors.
 # SPDX-License-Identifier: Apache-2.0
 
-import os,sys
+import os
 import numpy as np 
 from totalsegmentator.python_api import totalsegmentator
 import SimpleITK as sitk
-import nibabel as nib
 import xmltodict
 from typing import Union
+
 
 def sum_ctp(folder: os.PathLike, outfile : os.PathLike):
     """
@@ -83,7 +83,7 @@ def segment_ica(img) -> np.ndarray:
 
 
 
-def segment_brain(img) -> Union[np.ndarray, np.ndarray, np.ndarray]:
+def segment_brain_skull_cca(img) -> Union[np.ndarray, np.ndarray, np.ndarray]:
     """
     Segment brain, skull and common carotid artery from image with TotalSegmentator
 

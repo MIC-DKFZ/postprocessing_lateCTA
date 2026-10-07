@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2026 German Cancer Research Center (DKFZ) and contributors.
 # SPDX-License-Identifier: Apache-2.0
 
-import os, sys
+import os
 import numpy as np
 import SimpleITK as sitk
 import argparse
@@ -16,7 +16,8 @@ from scipy.ndimage import median_filter
 
 from utils.load_save import load_data
 from preprocessing import extract_ctp_array
-from utils.segment_carotid_ctp import segment_brain, segment_ica
+from utils.segment_carotid_ctp import segment_brain_skull_cca, segment_ica
+from utils.time_manager import load_time
 
 
 def get_variation_image(array: np.ndarray, image) -> np.ndarray:
@@ -124,26 +125,6 @@ def binarize_variation_image(cv_img: np.ndarray, cfg: dict) -> np.ndarray:
         ).astype(float)
 
     return bin_img
-
-
-def load_time(time_folder: os.PathLike, cid: str) -> np.ndarray:
-    """
-    Load time information for a certain case ID of interest
-
-    Params
-    ------
-    time_folder : folder with time information
-    cid : case ID of interest
-
-    Returns
-    -------
-    time_array : loaded time information
-
-    """
-    info_file = os.path.join(time_folder, f"{cid}_AcquisitionDateTime.npy")
-    assert os.path.exists(info_file), f"Time file '{info_file}' does not exist"
-
-    return np.load(info_file)
 
 
 def detect_outliers_mad(data: np.ndarray, threshold: float = 3.5):
@@ -340,7 +321,7 @@ def segment_brain_components(
             cta_image_sitk.CopyInformation(image)
             sitk.WriteImage(cta_image_sitk, cta_file)
             cta_image = nib.load(cta_file)
-        brain_segm, skull_segm, cca_segm = segment_brain(img=cta_image)
+        brain_segm, skull_segm, cca_segm = segment_brain_skull_cca(img=cta_image)
         ica_segm = segment_ica(img=cta_image)
         skull_segm_image = sitk.GetImageFromArray(skull_segm)
         skull_segm_image.CopyInformation(image)

@@ -2,47 +2,35 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import os,sys
+import os
 from typing import Union
 from scipy.interpolate import interp1d
 from loguru import logger
 
 
-def load_time(time_folder : os.PathLike, cid : str) -> Union[np.ndarray, np.ndarray]:
+def time_file(time_folder: os.PathLike, cid: str) -> str:
+    """Path of the acquisition time file of a case"""
+    return os.path.join(time_folder, f"{cid}_AcquisitionDateTime.npy")
+
+
+def load_time(time_folder: os.PathLike, cid: str) -> np.ndarray:
     """
-    Load time array information
+    Load time information for a certain case ID of interest
 
     Params
     ------
-    time_folder : folder with time files
-    cid : case ID to be extracted
+    time_folder : folder with time information
+    cid : case ID of interest
 
     Returns
     -------
-    t : time information for case of interest
-    time_info : time information matrix
-    
+    time_array : loaded time information
+
     """
-    assert os.path.exists(time_folder), f"Time folder '{time_folder}' does not exist"
-    # Obtain time files
-    time_files = np.array(sorted(os.listdir(time_folder)), dtype=str)
+    info_file = time_file(time_folder, cid)
+    assert os.path.exists(info_file), f"Time file '{info_file}' does not exist"
 
-    cid_files = time_files[np.char.find(time_files, cid) >= 0]
-    if cid_files.shape[0] == 0:
-        logger.info(f"No time file found for case ID '{cid}', skipping...")
-        return None
-    
-    #assert cid_files.shape[0] == 1, f"Either none or more than one corresponding case ID files were found in time folder '{time_folder}'"  
-
-    # Load time information from found file
-    time_file = os.path.join(time_folder, cid_files[0])
-    time_info = np.load(time_file)
-
-    # Take time information from mid-slice and set the offset to zero
-    t = time_info[time_info.shape[0] // 2]
-    t -= t.min()
-
-    return t, time_info
+    return np.load(info_file)
 
 
 
@@ -86,15 +74,15 @@ def extract_time_resolution(folder : os.PathLike, time_folder : os.PathLike, def
     times = {}
     resolutions = []
     for cid in cids:
-        times_cid, time_info = load_time(time_folder=time_folder, cid=cid)
-        if times_cid is not None:
-            # times[cid] = times_cid
-            times[cid] = time_info 
-            # resolution = np.abs(np.diff(times[cid]))
-            diff = np.abs(np.diff(time_info, 1))
-            resolution = np.median(diff, 1)
-            resolutions += resolution.tolist()
+        if not os.path.exists(time_file(time_folder, cid)):
+            logger.info(f"No time file found for case ID '{cid}', skipping...")
+            continue
 
+        time_info = load_time(time_folder=time_folder, cid=cid)
+        times[cid] = time_info
+        diff = np.abs(np.diff(time_info, 1))
+        resolution = np.median(diff, 1)
+        resolutions += resolution.tolist()
 
     # Define target resolution as median of all time resolutions found
     delta_t = default_delta # Default resolution if no time information is found

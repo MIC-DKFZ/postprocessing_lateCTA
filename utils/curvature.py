@@ -2,9 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import os,sys
 from scipy.signal import find_peaks, peak_prominences
-import matplotlib.pyplot as plt
 
 
 def extract_inflection_points(x: np.ndarray, y : np.ndarray) -> np.ndarray:
@@ -101,48 +99,3 @@ def second_cycle(x : np.ndarray, y : np.ndarray, thr_prominence : float = 20):
                 
 
     return t_prominent
-
-
-def aifs2cutoffs(aif_folder : os.PathLike, time_folder : os.PathLike, thr_prominence : float = 20.) -> dict:
-    """
-    Obtain cutoff times and secondary peak times from AIF folder
-
-    Params
-    ------
-    aif_folder : folder with AIF curve information
-    time_folder : folder with time file information
-    thr_prominence : threshold with %prominence information 
-        to find secondary peaks in the AIF curves (default: 20)
-    
-    """
-    from time_manager import load_time
-    assert os.path.exists(aif_folder), f"AIF folder '{aif_folder}' does not exist"
-    assert os.path.exists(time_folder), f"Time folder '{time_folder}' does not exist"
-
-    # Load files
-    files = sorted(os.listdir(aif_folder))
-
-    # Define output dictionary
-    info = {}  
-    for file in files:
-        # Load ID from each file 
-        if ".npy" in file:
-            cid = file.replace(".npy", "")
-            full_file = os.path.join(aif_folder, file)
-            # Load AIF and time information 
-            aif = np.load(full_file)
-            times = load_time(time_folder = time_folder, 
-                              cid=cid)
-
-            # Derive cutoff and secondary peaks
-            cutoff = extract_inflection_points(x = times, y = aif)
-            secondary = second_cycle(x = times, y = aif, 
-                                     thr_prominence=thr_prominence) 
-            if secondary is None:
-                secondary = "nan"
-
-            info[cid] = {"cutoff" : cutoff, 
-                         "secondary" : secondary}
-            
-    return info
-
