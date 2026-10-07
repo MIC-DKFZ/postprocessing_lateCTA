@@ -33,11 +33,8 @@ def get_variation_image(array: np.ndarray, image) -> np.ndarray:
 
     """
     array -= array.min()
-    # maximum = np.max(array, axis=0)
-    # minimum = np.min(array, axis=0)
     maximum = np.percentile(array, axis=0, q=90)
     minimum = np.percentile(array, axis=0, q=10)
-    # std = np.std(array, axis=0)
     mean = np.median(array, axis=0)
 
     cv = (maximum - minimum) / (mean + np.finfo(float).eps)
@@ -99,23 +96,14 @@ def binarize_variation_image(cv_img: np.ndarray, cfg: dict) -> np.ndarray:
     # Derive cluster centers
     centers = model.cluster_centers_.flatten()
 
-    print(centers)
-
     # Determine outliers: points beyond the last centroid + FWHM
 
     # Obtain the size of the lower centroid,
     # any voxel with a variation > lower centroid is a vessel voxel
-    high_ind = np.argsort(centers)[-1]
     medium_ind = np.argsort(centers)[1]
 
     # Labels derived from k-means model
-    labels = model.labels_.flatten()
     info = info.flatten()
-
-    # Compute intensity distance to lower cluster centroid in k-means
-    # dist = np.abs(info[labels == high_ind] - centers[high_ind])
-    # Derive full-width half maximum (FWHM) of distances to lower k-means cluster centroid
-    # fwhm = 2*math.sqrt(math.log(2))*dist.std()
 
     # Set as threshold the FWHM of the distances
     thr_cv = centers[medium_ind]
@@ -156,9 +144,6 @@ def load_time(time_folder: os.PathLike, cid: str) -> np.ndarray:
     assert os.path.exists(info_file), f"Time file '{info_file}' does not exist"
 
     return np.load(info_file)
-    #  info = load_data(info_file)
-    # assert "resampled_times" in list(info.keys()), f"Key 'resampled times' not in file '{info_file}'"
-    # return np.array(info["resampled_times"])
 
 
 def detect_outliers_mad(data: np.ndarray, threshold: float = 3.5):
@@ -173,7 +158,9 @@ def detect_outliers_mad(data: np.ndarray, threshold: float = 3.5):
     """
     median = np.median(data)
     mad = median_abs_deviation(data)
-    modified_z_scores = 0.6745 * (data - median) / (mad + np.finfo(float).eps)
+    modified_z_scores = (
+        0.6745 * (data - median) / (mad + np.finfo(float).eps)
+    )  # normal distribution information
     return np.where(modified_z_scores > threshold)[0]  # Indices of outliers
 
 
@@ -284,7 +271,6 @@ def trim_ctp(ctp_array: np.ndarray, cfg: dict) -> Union[np.ndarray, int, int]:
     high_slices = outliers[outliers > (low_slice + high_slice) // 2]
 
     # Determine extreme slices with outliers
-    print(low_slice, high_slice, outliers)
     if low_slices.shape[0] > 0:
         # Recompute inferior extremes if there are any outliers
         low_slice_outlier = low_slices.max()
@@ -553,12 +539,7 @@ def separate_arterial_venous(
         # Set time threshold based on the FWHM of the time distances to the lowest scoring cluster
         centers_time = model_time.cluster_centers_.flatten()
         middle_ind = np.argsort(centers_time)[1]
-        # low_ind = np.argmin(centers_time)
-        # labels_time = model_time.labels_.flatten()
-        # dist = np.abs(time_values[labels_time == low_ind] - centers_time[low_ind])
-        # fwhm = 2*math.sqrt(math.log(2))*dist.std()
 
-        # thr_time = centers_time[low_ind] + fwhm
         thr_time = centers_time[middle_ind]
 
     else:
@@ -650,9 +631,6 @@ def case_analysis(
     assert (
         time_array.shape[1] == ctp_array.shape[0]
     ), f"The time information length ({time_array.shape[1]}) does not coincide with the length of the CTP information ({ctp_array.shape[0]})"
-
-    # Extract average CTP frame
-    # avg_frame, avg_frame_image = extract_avg_frame(ctp=ctp_array, image=image, time=time_array)
 
     # Load CTA image
     logger.info("Loading CTA scan...")
