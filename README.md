@@ -138,15 +138,16 @@ export TOTALSEG_BIN=/path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator
 
 ## Main commands
 
-# If you already have a trained vessel occlusion detector in nnDetection and a trained CTA-to-time-vessel map generator
-To access our own nnDetection and generator trained models, contact us for sharing at reasonable enquiry
+### Quick start: trained models available
+If you already have a trained vessel occlusion detector in nnDetection and a trained CTA-to-time-vessel map generator, run the post-processing directly. To access our own trained nnDetection and generator models, contact us; we share them on reasonable request.
 ```
 conda activate ctp-postprocess
 python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model --p /path/to/det_models/TaskXYZ/model_name/foldF/val_or_test_predictions --o /path/to/postprocessed/predictions --cfg fpr_cfg.json --brain_cache /path/to/store/brain/segmentations --totalseg_bin /path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator 
 
 ```
 
-# If you want to start from a folder with CTP data and a folder with CTA data. Required data structure:
+### Full pipeline: data structure
+To start from a folder with CTP data and a folder with CTA data, use this structure:
 ```text
 ctp_folder/
 ├── case0/
@@ -172,14 +173,16 @@ cta_folder/
 └── caseM.nii.gz
 ```
    
-# 1. CTP-to-CTA registration
+### 1. CTP-to-CTA registration
 ```
 conda activate ctp-postprocess
 python register.py --cta /your/cta/folder --ctp /your/ctp/folder --out /registered/ctp/folder
 ```
 
-# 2. CTP curation (start with the output registered CTP folder from Step 1). 
-USE THE TOTALSEG ENV!!
+### 2. CTP curation
+Start with the registered CTP folder from step 1.
+
+> **Note:** run this step in the `ctp-totalseg` environment.
 
 It requires a nnU-Net vessel segmentation model, with a folder path in 'config.json' ('mca_cpt'). Right now this field is named as PLACEHOLDER
 
@@ -196,8 +199,11 @@ python utils/resample_time_info.py --time /ctp/time/folder --cta /your/cta/folde
 ```
 
 
-# 3. Time-vessel map extraction (start with the curated CTP folder from Step 2). 
-USE THE TOTALSEG ENV!!
+### 3. Time-vessel map extraction
+Start with the curated CTP folder from step 2.
+
+> **Note:** run this step in the `ctp-totalseg` environment.
+
 Brain segmentations are outputted in the folder under 'skull' argument
 If you have resampled your CTP time files, use the path /resampled/ctp/time/folder for the --time argument
 ```
@@ -206,7 +212,7 @@ python extract_tta.py --ctp /curated/ctp/folder --cta /your/cta/folder --time /c
 
 ```
 
-# 4. Postprocessing constraints application
+### 4. Post-processing constraints
 If you have to use the CTA-to-time-vessel map generator model
 ```
 conda activate ctp-postprocess
@@ -222,29 +228,30 @@ python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model
 ```
 
 
-# 5. Development of CTA-to-time-vessel map generator
-# 5.1 Distance map computation
+### 5. Development of the CTA-to-time-vessel map generator
+
+#### 5.1 Distance map computation
 ```
 conda activate ctp-postprocess
 python compute_distance.py --t /folder/with/time-vessel-maps --b /folder/where/to/store/brain/segmentations --o /folder/with/distance-maps
 ```
 
-# 5.2 Data preparation
+#### 5.2 Data preparation
 ```
 conda activate ctp-postprocess
 python utils/prepare_raw_data_generator.py --c /your/cta/folder --t /folder/with/time-vessel-maps --d /folder/with/distance-maps --b /folder/where/to/store/brain/segmentations --task task_name (nnUNet style, "DatasetXYZ") --o /folder/with/raw/generator/data
 ```
 
-# Adapted nnU-Net setup
+#### nnU-Net environment variables
 nnU-Net also requires a few environment variables to be set:
 
 ```bash
-export nnUNet_raw=/folder/with/raw/generator/data/raw_cropped # Folder with processed raw data by utils/prepare_raw_generator.py
-export nnUNet_preprocessed=/folder/with/nnUNet/preprocessed/data # Folder where to store vessel occlusion detectors
+export nnUNet_raw=/folder/with/raw/generator/data/raw_cropped # Folder with raw data processed by utils/prepare_raw_data_generator.py
+export nnUNet_preprocessed=/folder/with/nnUNet/preprocessed/data # Folder where to store preprocessed generator data
 export nnUNet_results=/folder/with/generator/model
 ```
 
-# 5.3 Preprocessing
+#### 5.3 Preprocessing
 ```
 conda activate ctp-postprocess
 nnUNetv2_extract_fingerprint -d TASK_ID
@@ -252,13 +259,14 @@ nnUNetv2_plan_experiment -d TASK_ID -pl nnUNetPlannerResEncL -preprocessor_name 
 nnUNetv2_preprocess -d TASK_ID -plans_name nnUNetResEncUNetLPlans -c 3d_fullres
 ```
 
-# 5.4 Training (assuming some separate test set exists)
+#### 5.4 Training
+This assumes a separate test set exists.
 ```
 conda activate ctp-postprocess
 nnUNetv2_train TASK_ID 3d_fullres all -p nnUNetResEncUNetLPlans -tr nnUNetRegressionTrainer --use_compressed
 ```
 
-# 5.5 Inference
+#### 5.5 Inference
 If test data is raw and has not been processed by prepare_raw_data_generator.py, prepare inference data by masking out non-brain voxels with -1024 HU
 ```
 conda activate ctp-postprocess
@@ -271,7 +279,7 @@ python Skeleton-recall/nnunetv2/utilities/predict_folder.py --d /folder/with/pro
 
 ```
 
-# 5.6 Inference evaluation
+#### 5.6 Inference evaluation
 ```
 conda activate ctp-postprocess
 python Skeleton-recall/nnunetv2/evaluation/evaluate_predictions.py --folder_ref /folder/with/ground-truth/time-vessel-maps --folder_pred /folder/with/output/predictions --output_file /output/metric/file.json
