@@ -8,3 +8,4 @@
 #   pip install -r requirements-totalseg.txt
 
 TotalSegmentator==2.18.0
+loguru

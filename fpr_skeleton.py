@@ -11,6 +11,7 @@ from scipy.spatial import cKDTree
 from scipy.ndimage import label, binary_erosion, binary_dilation
 from scipy.stats import rankdata
 from joblib import Parallel, delayed
+from loguru import logger
 import time
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -478,7 +479,7 @@ def process_case(
     outfile = os.path.join(out_folder, file)
 
     if not (os.path.exists(outfile)):
-        print(cid)
+        logger.info(cid)
 
         # Load time information
         tta_file = os.path.join(tta_folder, f"{cid}_0001.nii.gz")
@@ -645,7 +646,7 @@ def process_case(
                     final_tps += 1
 
         if final_tps - initial_tps < 0:
-            print(f"{cid} : WARNING: TP(s) removed!!")
+            logger.warning(f"{cid} : TP(s) removed")
 
         ious = box_iou_np(tp_boxes, boxes)
         tp_info = np.array(tp_info, dtype=bool)
@@ -687,11 +688,11 @@ def process_case(
             mean_scores_removed = scores_removed.mean()
 
         if tp_removed:
-            print(
+            logger.info(
                 f"{cid} : Conserved fraction: {out_boxes.shape[0]*100/(boxes.shape[0] + np.finfo(float).eps)}%, TP removed: {tp_removed}, {message}, mean score removed: {mean_scores_removed}, score before: {scores.mean()},  score after: {out_scores.mean()}"
             )
         else:
-            print(
+            logger.info(
                 f"{cid} : Conserved fraction: {out_boxes.shape[0]*100/(boxes.shape[0] + np.finfo(float).eps)}%, mean score removed: {mean_scores_removed}, score before: {scores.mean()},  score after: {out_scores.mean()}"
             )
 
@@ -719,6 +720,10 @@ def main(args):
 
     if not (os.path.exists(out_folder)):
         os.makedirs(out_folder)
+
+    # Set up logger
+    logfile = os.path.join(out_folder, "postprocessing.log")
+    logger.add(logfile, level="INFO")
 
     # Load configuration file
     cfg_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fpr_cfg.json")
@@ -758,4 +763,4 @@ def get_args():
 if __name__ == "__main__":
     t1 = time.time()
     main(get_args())
-    print(f"Time ellapsed: {time.time()-t1}sec")
+    logger.info(f"Time elapsed: {time.time()-t1:.1f} s")

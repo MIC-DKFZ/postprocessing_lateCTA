@@ -9,6 +9,7 @@ import argparse
 from batchgenerators.utilities.file_and_folder_operations import (
     load_json,
 )
+from loguru import logger
 import torch
 from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
 import time
@@ -18,7 +19,6 @@ import shutil
 import signal
 import subprocess
 import tempfile
-import traceback
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(script_dir))
@@ -55,9 +55,6 @@ DEFAULT_TOTALSEG_BIN = os.environ.get("TOTALSEG_BIN", "TotalSegmentator")
 # the meaning of the R3 cutoffs (box_vector thresholds) in the configuration file,
 # so those must be retuned. Leave it False to reproduce previously tuned thresholds.
 FIX_AXIS_ORDER = False
-
-# Print the raw R3 quantities for every kept box (debugging aid)
-VERBOSE_R3 = False
 
 # Suffix identifying the first (and only) input channel of a case
 CHANNEL_SUFFIX = "_0000.nii.gz"
@@ -242,6 +239,7 @@ def segment_brain(
     device: str = "gpu",
     brain_folder: os.PathLike = "",
     roi_subset: bool = False,
+    overwrite: bool = False,
 ) -> sitk.Image:
     """
     Return a binary brain mask (sitk.Image) in the same space as in_file
@@ -264,6 +262,7 @@ def segment_brain(
     device : "gpu", "cpu" or "gpu:X"
     brain_folder : folder with precomputed masks, taking priority over segmentation
     roi_subset : predict only the brain class (fast, but crops to an ROI first)
+    overwrite : ignore a cached mask and segment again
 
 
     Returns
@@ -282,7 +281,7 @@ def segment_brain(
     mask_file = os.path.join(cache_folder, f"{cid}.nii.gz")
 
     # Reuse the cached mask if it already exists
-    if os.path.exists(mask_file):
+    if os.path.exists(mask_file) and not overwrite:
         return sitk.ReadImage(mask_file)
 
     # Per-case temporary folder: TotalSegmentator uses fixed output names, so a
@@ -338,6 +337,7 @@ def precompute_brain_masks(
     fast: bool = False,
     device: str = "gpu",
     timer: StageTimer = None,
+    overwrite: bool = False,
 ) -> None:
     """
     Segment the brain for every selected case before the main loop starts.
@@ -356,7 +356,7 @@ def precompute_brain_masks(
     fast : use the 3mm model instead of the 1.5mm one
     device : "gpu", "cpu" or "gpu:X"
     timer : optional StageTimer collecting per-case timings
-
+    overwrite: overwrite brain segmentation
 
     Returns
     -------
@@ -366,10 +366,10 @@ def precompute_brain_masks(
     for i, file in enumerate(files):
         cid = cid_from_file(file)
 
-        # Distinguish a real segmentation from a cache hit, otherwise the timing
-        # summary is meaningless on re-runs
+        # Skip cases whose brain mask is already cached, unless overwriting
         cached = os.path.exists(os.path.join(cache_folder, f"{cid}.nii.gz"))
-        stage = "totalsegmentator_cached" if cached else "totalsegmentator"
+        if cached and not overwrite:
+            continue
 
         t0 = time.perf_counter()
         segment_brain(
@@ -379,15 +379,14 @@ def precompute_brain_masks(
             totalseg_bin=totalseg_bin,
             fast=fast,
             device=device,
+            overwrite=overwrite,
         )
         elapsed = time.perf_counter() - t0
         if timer is not None:
-            timer.record(stage=stage, cid=cid, seconds=elapsed)
+            timer.record(stage="totalsegmentator", cid=cid, seconds=elapsed)
 
-        print(
-            f"[TotalSegmentator {i + 1}/{len(files)}] {cid} "
-            f"({'cached' if cached else 'segmented'}, {elapsed:.2f}s)",
-            flush=True,
+        logger.info(
+            f"[TotalSegmentator {i + 1}/{len(files)}] {cid} segmented ({elapsed:.2f}s)"
         )
 
 
@@ -473,6 +472,106 @@ def postprocess_preds(
     return out.astype(np.float32)
 
 
+def postprocess_box(
+    box: np.ndarray,
+    skeleton: np.ndarray,
+    image: sitk.Image,
+    tip_mask: np.ndarray,
+    time_map: np.ndarray,
+    brain_centroid_physical: list,
+    brain_size: list,
+    cfg: dict,
+):
+    """
+    Decide whether to keep a predicted box, applying constraints R1-R4
+
+    Params
+    ------
+    box : box coordinates to be processed
+    skeleton : vessel skeleton
+    image : reference image
+    tip_mask : mask with tips including vessel interruptions
+    time_map : time-vessel map
+    brain_centroid_physical : physical coordinates of centroid, for R3
+    brain_size : brain dimensions in 3 coordinates of space
+    cfg : postprocessing configuration parameters
+
+    Returns
+    -------
+    keep : whether to keep box or not
+
+    """
+
+    # Derive patch of interest around every box, enlarge twice box size
+    coords = derive_patch_coords(box=box, shape=skeleton.shape)
+    # Derive center of patch
+    center = (
+        np.array(
+            [
+                coords[0] + coords[2],
+                coords[1] + coords[3],
+                coords[-2] + coords[-1],
+            ]
+        )
+        // 2
+    )
+    # Derive centroid of box for R3 in physical coordinates
+    center_index = center[::-1] if FIX_AXIS_ORDER else center
+    center_physical = image.TransformContinuousIndexToPhysicalPoint(
+        [float(c) for c in center_index]
+    )
+    # Set patches in tip mask and in time-vessel maps
+    patch_tip = tip_mask[
+        coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
+    ]
+    time_patch = time_map[
+        coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
+    ]
+
+    # Set up time value threshold for patch of interest
+    time_vals = time_patch[time_patch > 0]
+    max_time = 0.0
+    if time_vals.shape[0] > 0:
+        max_time = np.percentile(time_vals, 5)
+
+    # R2: the time value must fall inside the enhancement window. Both bounds
+    # are required to reproduce fpr_skeleton.py; dropping the lower one keeps
+    # every early-enhancing box that the original rejected
+    time_condition = (max_time > cfg["t_low_percentile"]) & (
+        max_time < cfg["t_high_percentile"]
+    )
+
+    # Combine R1 and R2 constraints
+    keep = (patch_tip.sum() > 0).any() & time_condition
+
+    if (center.shape[0] > 0) and keep:
+        # Compute relative location of prediction
+        # Too high or too low positives in superior and posterior brain tend to be FPs
+        box_vector = (np.array(center_physical) - np.array(brain_centroid_physical)) / (
+            brain_size + np.finfo(float).eps
+        )  # normalized box coordinate to brain centroid difference
+
+        if (
+            (box_vector[0] < cfg["relative_brain_pos"][0])
+            or (box_vector[0] > cfg["relative_brain_pos"][1])
+            or (box_vector[1] < cfg["relative_brain_pos"][2])
+            or (box_vector[1] > cfg["relative_brain_pos"][3])
+        ):
+            keep = False
+
+    # R4: reject implausible box volumes (in mL, hence the /1000). Applied on
+    # the raw box rather than the enlarged patch, matching fpr_skeleton.py.
+    # The bounds were hardcoded as 1 and 200 in the original; they are read
+    # from the config here if present, so the defaults reproduce it exactly
+    if keep:
+        vol = (box[2] - box[0]) * (box[3] - box[1]) * (box[-1] - box[-2]) / 1000
+
+        if (vol < cfg.get("min_volume", 1)) or (vol > cfg.get("max_volume", 200)):
+            keep = False
+
+    return keep
+
+
 def process_case(
     file: os.PathLike,
     cfg: dict,
@@ -480,6 +579,7 @@ def process_case(
     time_map: np.ndarray,
     brain_segm: np.ndarray,
     out_folder: os.PathLike,
+    overwrite: bool = False,
 ):
     """
     Process case
@@ -508,7 +608,9 @@ def process_case(
 
     outfile = os.path.join(out_folder, os.path.basename(file))
 
-    if not (os.path.exists(outfile)):  # Skip if file has already been postprocessed
+    if (
+        not (os.path.exists(outfile)) or overwrite
+    ):  # Skip if file has already been postprocessed
 
         # Smooth time information
         _, time_cc = smooth_time(
@@ -554,84 +656,22 @@ def process_case(
             endpoints=tips, shape=skeleton.shape, radius=cfg["tip_radius"]
         )
 
-        keep_box = []
-
-        # Iterate through each box
-        for box in boxes:
-            # Derive patch of interest around every box, enlarge twice box size
-            coords = derive_patch_coords(box=box, shape=skeleton.shape)
-            # Derive center of patch
-            center = (
-                np.array(
-                    [
-                        coords[0] + coords[2],
-                        coords[1] + coords[3],
-                        coords[-2] + coords[-1],
-                    ]
-                )
-                // 2
+        # Postprocess boxes one by one. Each box only reads two small patches, so
+        # parallel workers cost more than they save (joblib processes would copy the
+        # full volumes to every worker)
+        keep_box = [
+            postprocess_box(
+                box=box,
+                skeleton=skeleton,
+                image=image,
+                tip_mask=tip_mask,
+                time_map=time_map,
+                brain_centroid_physical=brain_centroid_physical,
+                brain_size=brain_size,
+                cfg=cfg,
             )
-            # Derive centroid of box for R3 in physical coordinates
-            center_index = center[::-1] if FIX_AXIS_ORDER else center
-            center_physical = image.TransformContinuousIndexToPhysicalPoint(
-                [float(c) for c in center_index]
-            )
-            # Set patches in tip mask and in time-vessel maps
-            patch_tip = tip_mask[
-                coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
-            ]
-            time_patch = time_map[
-                coords[0] : coords[2], coords[1] : coords[3], coords[-2] : coords[-1]
-            ]
-
-            # Set up time value threshold for patch of interest
-            time_vals = time_patch[time_patch > 0]
-            max_time = 0.0
-            if time_vals.shape[0] > 0:
-                max_time = np.percentile(time_vals, 5)
-
-            # R2: the time value must fall inside the enhancement window. Both bounds
-            # are required to reproduce fpr_skeleton.py; dropping the lower one keeps
-            # every early-enhancing box that the original rejected
-            time_condition = (max_time > cfg["t_low_percentile"]) & (
-                max_time < cfg["t_high_percentile"]
-            )
-
-            # Combine R1 and R2 constraints
-            keep = (patch_tip.sum() > 0).any() & time_condition
-
-            if (center.shape[0] > 0) and keep:
-                # Compute relative location of prediction
-                # Too high or too low positives in superior and posterior brain tend to be FPs
-                box_vector = (
-                    np.array(center_physical) - np.array(brain_centroid_physical)
-                ) / (
-                    brain_size + np.finfo(float).eps
-                )  # normalized box coordinate to brain centroid difference
-                if VERBOSE_R3:
-                    print(center_physical, brain_centroid_physical, brain_size)
-
-                if (
-                    (box_vector[0] < cfg["relative_brain_pos"][0])
-                    or (box_vector[0] > cfg["relative_brain_pos"][1])
-                    or (box_vector[1] < cfg["relative_brain_pos"][2])
-                    or (box_vector[1] > cfg["relative_brain_pos"][3])
-                ):
-                    keep = False
-
-            # R4: reject implausible box volumes (in mL, hence the /1000). Applied on
-            # the raw box rather than the enlarged patch, matching fpr_skeleton.py.
-            # The bounds were hardcoded as 1 and 200 in the original; they are read
-            # from the config here if present, so the defaults reproduce it exactly
-            if keep:
-                vol = (box[2] - box[0]) * (box[3] - box[1]) * (box[-1] - box[-2]) / 1000
-
-                if (vol < cfg.get("min_volume", 1)) or (
-                    vol > cfg.get("max_volume", 200)
-                ):
-                    keep = False
-
-            keep_box.append(keep)
+            for box in boxes
+        ]
 
         keep_box = np.array(keep_box, dtype=bool)
 
@@ -667,6 +707,7 @@ def main(args):
     tta_maps = args.tta_maps  # Folder for predicted time-vessel maps ('' disables)
     max_cases = args.max_cases  # Process at most this many new cases (0 = all)
     id_file = args.i  # file with specific IDs to postprocess
+    overwrite = args.overwrite  # Recompute brain masks and post-processed predictions
 
     assert os.path.exists(data_folder), f"Data folder '{data_folder}' does not exist"
     assert (len(model_folder) == 0) or os.path.exists(
@@ -693,29 +734,33 @@ def main(args):
     if not (os.path.exists(out_folder)):
         os.makedirs(out_folder)
 
+    # Set up logger
+    logfile = os.path.join(out_folder, "postprocessing.log")
+    logger.add(logfile, level="INFO")
+
     # Start streaming timings to disk NOW. Every row is flushed and fsynced as soon
     # as its stage ends, so the file stays valid even if the process is killed
     # outright (OOM killer, scheduler, node failure) with no chance to clean up
     timings_file = os.path.join(out_folder, "timings.csv")
     timer.attach_csv(timings_file, resume=True)
-    print(f"Streaming timings to '{timings_file}' (run_id {timer.run_id})", flush=True)
+    logger.info(
+        f"Streaming timings to '{timings_file}' (run_id {timer.run_id})"
+    )
 
     if len(tta_maps) > 0:
         os.makedirs(tta_maps, exist_ok=True)
-        print(
+        logger.info(
             f"Loading time-vessel maps from '{tta_maps}' where they exist, and saving "
             "predicted maps there otherwise. NOTE: cases whose output already exists "
             "are skipped before inference, so clear the output folder (or use a fresh "
             "one) to get a map for every case",
-            flush=True,
         )
 
     mem_total, mem_avail = system_memory_gb()
-    print(
+    logger.info(
         f"System memory: {mem_total:.1f} GB total, {mem_avail:.1f} GB available | "
         f"workers (--np) = {workers}"
         + (f" | ceiling {mem_limit_gb:.1f} GB" if mem_limit_gb > 0 else ""),
-        flush=True,
     )
 
     # Print whatever was collected on the way out, for any exit path that still runs
@@ -724,11 +769,11 @@ def main(args):
         if getattr(_final_report, "done", False):
             return
         _final_report.done = True
-        print(f"\n--- run ended ({reason}) ---", flush=True)
+        logger.info(f"\n--- run ended ({reason}) ---")
         try:
             timer.summary(total_seconds=time.perf_counter() - run_t0, n_cases=None)
         except Exception as exc:
-            print(f"Could not print summary: {exc}", flush=True)
+            logger.warning(f"Could not print summary: {exc}")
         timer.close()
 
     atexit.register(_final_report, "atexit")
@@ -757,19 +802,17 @@ def main(args):
         f" matching the IDs in '{id_file}'" if case_ids is not None else ""
     )
     if case_ids is None:
-        print(f"Processing all {len(files)} cases in '{data_folder}'", flush=True)
+        logger.info(f"Processing all {len(files)} cases in '{data_folder}'")
     else:
-        print(
+        logger.info(
             f"Processing {len(files)}/{len(case_ids)} requested cases "
             f"from '{id_file}'",
-            flush=True,
         )
     if len(missing) > 0:
-        print(
+        logger.info(
             f"WARNING: {len(missing)} requested ID(s) have no matching "
             f"'*{CHANNEL_SUFFIX}' file and will be skipped: "
             f"{', '.join(missing[:10])}{' ...' if len(missing) > 10 else ''}",
-            flush=True,
         )
 
     # Segment the brain of every selected case up front, in a separate process, so
@@ -782,6 +825,7 @@ def main(args):
         fast=totalseg_fast,
         device=totalseg_device,
         timer=timer,
+        overwrite=overwrite,
     )
 
     # The generator is only needed for cases without a precomputed time-vessel map
@@ -830,9 +874,9 @@ def main(args):
         # only fires after inference has already run, so a resumed run would repeat
         # ~60s of GPU work per finished case just to throw the result away
         expected_out = os.path.join(out_folder, f"{cid}_boxes.pkl")
-        if os.path.exists(expected_out):
-            print(
-                f"cid : {cid} ({i + 1}/{len(files)}) already done, skipping", flush=True
+        if os.path.exists(expected_out) and not (overwrite):
+            logger.info(
+                f"cid : {cid} ({i + 1}/{len(files)}) already done, skipping"
             )
             n_done += 1
             continue
@@ -841,14 +885,13 @@ def main(args):
         # short-lived processes. Anything the process leaks is reclaimed by the OS on
         # exit, and the next invocation resumes from the skip check above
         if (max_cases > 0) and (n_ok + n_failed >= max_cases):
-            print(
+            logger.info(
                 f"\nReached --max_cases {max_cases}; exiting cleanly. "
                 f"{len(files) - n_done - n_ok - n_failed} case(s) still to do",
-                flush=True,
             )
             break
 
-        print(f"cid : {cid} ({i + 1}/{len(files)})", flush=True)
+        logger.info(f"cid : {cid} ({i + 1}/{len(files)})")
         case_t0 = time.perf_counter()
 
         try:
@@ -927,15 +970,18 @@ def main(args):
                         time_map=time_vessel_map,
                         brain_segm=brain,
                         out_folder=out_folder,
+                        overwrite=overwrite,
                     )
             else:
-                print(f"    no prediction file '{pred_file}', skipping", flush=True)
+                logger.info(
+                    f"    no prediction file '{pred_file}', skipping"
+                )
 
             n_ok += 1
 
         except Exception as exc:
             # One bad case should not throw away the whole run. The failure is
-            # recorded in the CSV and printed with a full traceback, then the loop
+            # recorded in the CSV and logged with a full traceback, then the loop
             # moves on. MemoryError is included: it is a normal Python exception,
             # unlike an OOM kill, which never reaches this handler
             n_failed += 1
@@ -947,8 +993,7 @@ def main(args):
                 status="error",
                 error=f"{type(exc).__name__}: {exc}"[:500],
             )
-            print(f"    FAILED: {type(exc).__name__}: {exc}", flush=True)
-            traceback.print_exc()
+            logger.exception(f"    FAILED: {type(exc).__name__}: {exc}")
             if not keep_going:
                 raise
 
@@ -961,28 +1006,26 @@ def main(args):
             iterator = props = None
             gc.collect()
 
-            print(
+            logger.info(
                 f"    case time: {time.perf_counter() - case_t0:.2f}s"
                 f" | RSS {rss_gb():.2f} GB (peak {peak_rss_gb():.2f} GB)"
                 f" | children {count_children()} | fds {count_open_fds()}",
-                flush=True,
             )
 
     # Report end-to-end execution time
-    print(
+    logger.info(
         f"\nCompleted {n_ok} case(s) this run, {n_failed} failed, "
         f"{n_done} already done, {len(files)} selected",
-        flush=True,
     )
     if failed_cids:
-        print(f"Failed cases: {', '.join(failed_cids)}", flush=True)
+        logger.info(f"Failed cases: {', '.join(failed_cids)}")
         failed_file = os.path.join(out_folder, "failed_cids.txt")
         with open(failed_file, "w") as f:
             f.write("\n".join(failed_cids) + "\n")
-        print(f"Retry them with --i '{failed_file}'", flush=True)
+        logger.info(f"Retry them with --i '{failed_file}'")
 
     _final_report("completed")
-    print(f"Per-case timings written to '{timings_file}'", flush=True)
+    logger.info(f"Per-case timings written to '{timings_file}'")
 
     # Machine-readable trailer for wrapper scripts: how many selected cases still
     # have no output. A chunked driver loop uses this to stop as soon as the work is
@@ -1101,6 +1144,15 @@ def get_args():
         required=False,
         default="",
         type=str,
+    )
+    parser.add_argument(
+        "--overwrite",
+        help=(
+            "Recompute brain masks and post-processed predictions that already exist. "
+            "Time-vessel maps found in --tta_maps are always used as inputs and are "
+            "never overwritten"
+        ),
+        action="store_true",
     )
 
     args = parser.parse_args()

@@ -421,6 +421,7 @@ def main(args):
     folder = args.folder  # Folder with CTP data subfolders
     time_folder = args.time  # Folder with time array data
     out_folder = args.out  # Output folder with results
+    overwrite = args.overwrite
 
     assert os.path.exists(
         os.path.dirname(out_folder)
@@ -457,13 +458,10 @@ def main(args):
     # Extract case IDs from CTP image folders
     cids = extract_cids(ctp_folder=folder, time_info=times)
 
-    assert "overwrite" in list(cfg.keys()), f"'overwrite' key not in configuration"
-
     for cid in cids:
         out_folder_cid = os.path.join(out_folder, cid)
-        if not (os.path.exists(out_folder_cid)) or (cfg["overwrite"].lower() != "n"):
+        if not (os.path.exists(out_folder_cid)) or overwrite:
             logger.info(f"Processing case {cid}")
-            # If case has already been processed and overwrite is set to "n", skip
             assert cid in list(
                 times.keys()
             ), f"Case ID '{cid}' not in time information dictionary"
@@ -484,6 +482,11 @@ def get_args():
     )
     parser.add_argument("--time", help="Folder with time data", required=True, type=str)
     parser.add_argument("--out", help="Output folder", required=True, type=str)
+    parser.add_argument(
+        "--overwrite",
+        help="Process again cases whose output already exists",
+        action="store_true",
+    )
 
     args = parser.parse_args()
     return args
