@@ -16,7 +16,7 @@ Martínez Mora, A.; Mojtahedi, M.; de Vries, L.; Baumgartner, M.; Kirchhoff, Y.;
 
 
 ## Purpose
-Post-processing repository for vessel occlusion detection in late-phase CTA, tested with nnDetection-like models. The code has an end-to-end script that segments the brain from CTA images, infers time-vessel maps from CTA images with a modified nnU-Net skeleton-recall based module, and accesses nnDetection predictions to remove implausible detected boxes based on:
+Post-processing repository for vessel occlusion detection in late-phase CTA, tested with nnDetection-like models. The code has an end-to-end script ("postprocessing_end2end.py") that segments the brain from CTA images, infers time-vessel maps from CTA images with a modified nnU-Net skeleton-recall based module, and accesses nnDetection predictions to remove implausible detected boxes based on:
 - R1: boxes far from skeletonized vessel tips, based on a voxel radius threshold in "cfg/config_postprocess.json" (field "tip_radius") are removed.
 - R2: boxes in late-enhanced vessels, with a relative time of arrival over a maximum threshold in cfg/config_postprocess.json (field "t_high_percentile") and under a minimum threshold (field "t_low_percentile") in the vicinity of the time-vessel map are removed.
 - R3: boxes exceeding superior or posterior positions relative to the brain centroid, specified in cfg/config_postprocess.json (field "relative_brain_pos") are removed 
