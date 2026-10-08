@@ -314,12 +314,10 @@ nnU-Net inference
 ```
 conda activate ctp-postprocess
 python Skeleton-recall/nnunetv2/utilities/predict_folder.py --d /folder/with/processed/inference/data --o /folder/with/output/predictions --m /folder/with/generator/model/DatasetXYZ/nnUNetRegressionTrainer__nnUNetResEncUNetLPlans__3d_fullres --b /folder/where/to/store/brain/segmentations --cfg cfg/params_generator.json
-
 ```
 
 #### 5.6 Inference evaluation
 ```
 conda activate ctp-postprocess
 python Skeleton-recall/nnunetv2/evaluation/evaluate_predictions.py --folder_ref /folder/with/ground-truth/time-vessel-maps --folder_pred /folder/with/output/predictions --output_file /output/metric/file.json
-
 ```
