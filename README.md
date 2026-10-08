@@ -11,7 +11,9 @@ Copyright German Cancer Research Center (DKFZ) and contributors.
 
 Please cite the following paper if you use this code: (https://www.mdpi.com/2075-4418/16/18/2972)
 
+```
 Martínez Mora, A.; Mojtahedi, M.; de Vries, L.; Baumgartner, M.; Kirchhoff, Y.; Zenk, M.; Eckstein, K.; Kächele, J.; Brugnara, G.; Bendszus, M.; et al. Anatomy- and Time-Based Post-Processing with CT Perfusion-Derived Time–Vessel Maps to Reduce Incorrect Occlusion Detections in Late-Phase CT Angiography. Diagnostics 2026, 16, 2972. https://doi.org/10.3390/diagnostics16182972
+```
 
 ## Purpose
 Post-processing repository for vessel occlusion detection in late-phase CTA, tested with nnDetection-like models. The code has an end-to-end script that segments the brain from CTA images, infers time-vessel maps from CTA images with a modified nnU-Net skeleton-recall based module, and accesses nnDetection predictions to remove implausible detected boxes based on:
