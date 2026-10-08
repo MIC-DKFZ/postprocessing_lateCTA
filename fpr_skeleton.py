@@ -16,7 +16,7 @@ import time
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(script_dir))
-from utils.load_save import load_data, write_data
+from utils.load_save import CFG_DIR, load_data, write_data
 from utils.vessel_skeleton import (
     find_endpoints,
     compute_tip_image,
@@ -726,7 +726,7 @@ def main(args):
     logger.add(logfile, level="INFO")
 
     # Load configuration file
-    cfg_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fpr_cfg.json")
+    cfg_file = os.path.join(CFG_DIR, "config_postprocess.json")
     assert os.path.exists(cfg_file), f"Configuration file '{cfg_file}' does not exist"
     cfg = load_data(cfg_file)
 

@@ -9,7 +9,7 @@ from loguru import logger
 from typing import Union
 import torch
 
-from utils.load_save import load_data, write_data
+from utils.load_save import CFG_DIR, load_data, write_data
 from utils.segment_mca_ctp import predictionAlgorithm
 from utils.curvature import extract_inflection_points, second_cycle
 from utils.time_manager import (
@@ -440,10 +440,9 @@ def main(args):
         os.makedirs(info_folder)
 
     # Load config
-    assert os.path.exists(
-        os.path.join(os.getcwd(), "config.json")
-    ), "Configuration file does not exist"
-    cfg = load_data(filename="config.json")
+    cfg_file = os.path.join(CFG_DIR, "config_preprocess.json")
+    assert os.path.exists(cfg_file), f"Configuration file '{cfg_file}' does not exist"
+    cfg = load_data(filename=cfg_file)
 
     # Load time resolutions and IDs
     assert "time_delta_default" in list(

@@ -14,7 +14,7 @@ from skimage.morphology import remove_small_objects
 from scipy.stats import median_abs_deviation
 from scipy.ndimage import median_filter
 
-from utils.load_save import load_data
+from utils.load_save import CFG_DIR, load_data
 from preprocessing import extract_ctp_array
 from utils.segment_carotid_ctp import segment_brain_skull_cca, segment_ica
 from utils.time_manager import load_time
@@ -764,7 +764,7 @@ def main(args):
     ), f"Parent output folder '{out}' does not exist"
 
     # Set up configuration file
-    cfg_file = os.path.join(os.path.dirname(__file__), "config_tta.json")
+    cfg_file = os.path.join(CFG_DIR, "config_tta.json")
     assert os.path.exists(cfg_file), f"Configuration file '{cfg_file}' does not exist"
     cfg = load_data(cfg_file)
 

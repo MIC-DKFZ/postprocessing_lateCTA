@@ -22,7 +22,7 @@ import tempfile
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(script_dir))
-from utils.load_save import load_data, write_data
+from utils.load_save import CFG_DIR, load_data, write_data
 from utils.resource_monitor import (
     check_memory_headroom,
     count_children,
@@ -743,9 +743,7 @@ def main(args):
     # outright (OOM killer, scheduler, node failure) with no chance to clean up
     timings_file = os.path.join(out_folder, "timings.csv")
     timer.attach_csv(timings_file, resume=True)
-    logger.info(
-        f"Streaming timings to '{timings_file}' (run_id {timer.run_id})"
-    )
+    logger.info(f"Streaming timings to '{timings_file}' (run_id {timer.run_id})")
 
     if len(tta_maps) > 0:
         os.makedirs(tta_maps, exist_ok=True)
@@ -875,9 +873,7 @@ def main(args):
         # ~60s of GPU work per finished case just to throw the result away
         expected_out = os.path.join(out_folder, f"{cid}_boxes.pkl")
         if os.path.exists(expected_out) and not (overwrite):
-            logger.info(
-                f"cid : {cid} ({i + 1}/{len(files)}) already done, skipping"
-            )
+            logger.info(f"cid : {cid} ({i + 1}/{len(files)}) already done, skipping")
             n_done += 1
             continue
 
@@ -973,9 +969,7 @@ def main(args):
                         overwrite=overwrite,
                     )
             else:
-                logger.info(
-                    f"    no prediction file '{pred_file}', skipping"
-                )
+                logger.info(f"    no prediction file '{pred_file}', skipping")
 
             n_ok += 1
 
@@ -1066,7 +1060,10 @@ def get_args():
         type=str,
     )
     parser.add_argument(
-        "--cfg", help="Postprocessing configuration file", required=True, type=str
+        "--cfg",
+        help="Postprocessing configuration file (default: cfg/config_postprocess.json)",
+        default=os.path.join(CFG_DIR, "config_postprocess.json"),
+        type=str,
     )
     parser.add_argument("--np", help="Number of parallel workers", default=4, type=int)
     parser.add_argument(

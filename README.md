@@ -9,10 +9,10 @@ Martínez Mora, A.; Mojtahedi, M.; de Vries, L.; Baumgartner, M.; Kirchhoff, Y.;
 
 ## Purpose
 Post-processing repository for vessel occlusion detection in late-phase CTA, tested with nnDetection-like models. The code has an end-to-end script that segments the brain from CTA images, infers time-vessel maps from CTA images with a modified nnU-Net skeleton-recall based module, and accesses nnDetection predictions to remove implausible detected boxes based on:
-- R1: boxes far from skeletonized vessel tips, based on a voxel radius threshold in "fpr_cfg.json" (field "tip_radius") are removed.
-- R2: boxes in late-enhanced vessels, with a relative time of arrival over a maximum threshold in fpr_cfg.json (field "t_high_percentile") and under a minimum threshold (field "t_low_percentile") in the vicinity of the time-vessel map are removed.
-- R3: boxes exceeding superior or posterior positions relative to the brain centroid, specified in fpr_cfg.json (field "relative_brain_pos") are removed 
-- R4: boxes with a too small or too large overall volume are removed (fields "min_volume" and "max_volume" in fpr_cfg.json)
+- R1: boxes far from skeletonized vessel tips, based on a voxel radius threshold in "cfg/config_postprocess.json" (field "tip_radius") are removed.
+- R2: boxes in late-enhanced vessels, with a relative time of arrival over a maximum threshold in cfg/config_postprocess.json (field "t_high_percentile") and under a minimum threshold (field "t_low_percentile") in the vicinity of the time-vessel map are removed.
+- R3: boxes exceeding superior or posterior positions relative to the brain centroid, specified in cfg/config_postprocess.json (field "relative_brain_pos") are removed 
+- R4: boxes with a too small or too large overall volume are removed (fields "min_volume" and "max_volume" in cfg/config_postprocess.json)
 Resulting boxes are saved in an alternative folder of your choice.
 
 The repository also offers step-by-step execution, following this roadmap. Numbers match the steps under [Main commands](#main-commands):
@@ -144,7 +144,7 @@ All scripts skip cases whose output already exists, so an interrupted run can be
 If you already have a trained vessel occlusion detector in nnDetection and a trained CTA-to-time-vessel map generator, run the post-processing directly. To access our own trained nnDetection and generator models, contact us; we share them on reasonable request.
 ```
 conda activate ctp-postprocess
-python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model --p /path/to/det_models/TaskXYZ/model_name/foldF/val_or_test_predictions --o /path/to/postprocessed/predictions --cfg fpr_cfg.json --brain_cache /path/to/store/brain/segmentations --totalseg_bin /path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator 
+python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model --p /path/to/det_models/TaskXYZ/model_name/foldF/val_or_test_predictions --o /path/to/postprocessed/predictions --cfg cfg/config_postprocess.json --brain_cache /path/to/store/brain/segmentations --totalseg_bin /path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator 
 
 ```
 
@@ -186,7 +186,7 @@ Start with the registered CTP folder from step 1.
 
 > **Note:** run this step in the `ctp-totalseg` environment.
 
-It requires a nnU-Net vessel segmentation model, with a folder path in 'config.json' ('mca_cpt'). Right now this field is named as PLACEHOLDER
+It requires a nnU-Net vessel segmentation model, with a folder path in 'cfg/config_preprocess.json' ('mca_cpt'). Right now this field is named as PLACEHOLDER
 
 Contact us if you require the model. 
 ```
@@ -218,14 +218,14 @@ python extract_tta.py --ctp /curated/ctp/folder --cta /your/cta/folder --time /c
 If you have to use the CTA-to-time-vessel map generator model
 ```
 conda activate ctp-postprocess
-python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model --p /path/to/det_models/TaskXYZ/model_name/foldF/val_or_test_predictions --o /path/to/postprocessed/predictions --cfg fpr_cfg.json --brain_cache /path/to/store/brain/segmentations --totalseg_bin /path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator 
+python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model --p /path/to/det_models/TaskXYZ/model_name/foldF/val_or_test_predictions --o /path/to/postprocessed/predictions --cfg cfg/config_postprocess.json --brain_cache /path/to/store/brain/segmentations --totalseg_bin /path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator 
 
 ```
 
 If you have already-derived time-vessel maps (named `<case>_0001.nii.gz`), pass their folder with `--tta_maps`. Maps found there are loaded instead of predicted, and missing ones are predicted and saved there. `--m` can be omitted if every case already has a map.
 ```
 conda activate ctp-postprocess
-python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model --tta_maps /folder/with/time-vessel-maps --p /path/to/det_models/TaskXYZ/model_name/foldF/val_or_test_predictions --o /path/to/postprocessed/predictions --cfg fpr_cfg.json --brain_cache /path/to/store/brain/segmentations --totalseg_bin /path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator 
+python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model --tta_maps /folder/with/time-vessel-maps --p /path/to/det_models/TaskXYZ/model_name/foldF/val_or_test_predictions --o /path/to/postprocessed/predictions --cfg cfg/config_postprocess.json --brain_cache /path/to/store/brain/segmentations --totalseg_bin /path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator 
 
 ```
 
@@ -277,7 +277,7 @@ python utils/obtain_brainProd_images.py --i /raw/CTA/folder --b /folder/where/to
 nnU-Net inference
 ```
 conda activate ctp-postprocess
-python Skeleton-recall/nnunetv2/utilities/predict_folder.py --d /folder/with/processed/inference/data --o /folder/with/output/predictions --m /folder/with/generator/model/DatasetXYZ/nnUNetRegressionTrainer__nnUNetResEncUNetLPlans__3d_fullres --b /folder/where/to/store/brain/segmentations --cfg params_generator.json
+python Skeleton-recall/nnunetv2/utilities/predict_folder.py --d /folder/with/processed/inference/data --o /folder/with/output/predictions --m /folder/with/generator/model/DatasetXYZ/nnUNetRegressionTrainer__nnUNetResEncUNetLPlans__3d_fullres --b /folder/where/to/store/brain/segmentations --cfg cfg/params_generator.json
 
 ```
 

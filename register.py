@@ -12,7 +12,7 @@ from registration.registration_utils import (
 import time
 import argparse
 from loguru import logger
-from utils.load_save import load_data
+from utils.load_save import CFG_DIR, load_data
 import matplotlib.pyplot as plt
 
 from preprocessing import extract_ctp_array
@@ -304,7 +304,7 @@ def main(args):
     logger.add(logfile, level="INFO")
 
     # Load config
-    config_file = "register_config.json"
+    config_file = os.path.join(CFG_DIR, "config_register.json")
     assert os.path.exists(
         config_file
     ), f"Configuration file for registration '{config_file}' does not exist"

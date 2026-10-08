@@ -2,9 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 import pickle
 import yaml
 from typing import Dict, Any
+
+# Folder with the configuration files, resolved from this file so that scripts
+# find it regardless of the working directory they are run from
+CFG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cfg")
+
 
 def write_data(data: Dict[str, Any], filename: str) -> None:
     """
