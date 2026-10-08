@@ -195,7 +195,9 @@ cta_folder/
 ├── ...
 └── caseM.nii.gz
 ```
-   
+
+## Step-by-step processing
+
 ### 1. CTP-to-CTA registration
 ```
 conda activate ctp-postprocess
