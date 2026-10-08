@@ -138,6 +138,8 @@ export TOTALSEG_BIN=/path/to/conda/envs/ctp-totalseg/bin/TotalSegmentator
 
 ## Main commands
 
+All scripts skip cases whose output already exists, so an interrupted run can be resumed. Pass `--overwrite` to `register.py`, `preprocessing.py`, `extract_tta.py` or `postprocess_end2end.py` to process those cases again. In `postprocess_end2end.py` it recomputes brain masks and post-processed predictions; time–vessel maps in `--tta_maps` are always treated as inputs and never overwritten.
+
 ### Quick start: trained models available
 If you already have a trained vessel occlusion detector in nnDetection and a trained CTA-to-time-vessel map generator, run the post-processing directly. To access our own trained nnDetection and generator models, contact us; we share them on reasonable request.
 ```
