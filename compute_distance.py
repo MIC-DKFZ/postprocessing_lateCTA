@@ -14,8 +14,28 @@ from joblib import Parallel, delayed
 from typing import Union
 import matplotlib.pyplot as plt
 
-from compute_phase import apply_window
 from utils.load_save import load_data, write_data
+
+
+def apply_window(image: np.ndarray, window_center: float, window_width: float):
+    """
+    Apply window to image
+
+    Params
+    ------
+    image : input image
+    window_center : window center
+    window_width : window width
+
+    Returns
+    -------
+    windowed : windowed image, normalized to [0, 1]
+
+    """
+    lower = window_center - window_width / 2
+    upper = window_center + window_width / 2
+    windowed = np.clip(image, lower, upper)
+    return (windowed - lower) / window_width
 
 
 def distance_map(img: np.ndarray, val: float, spacing: np.ndarray):
