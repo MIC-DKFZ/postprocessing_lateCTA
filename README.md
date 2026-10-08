@@ -23,7 +23,7 @@ Post-processing repository for vessel occlusion detection in late-phase CTA, tes
 - R4: boxes with a too small or too large overall volume are removed (fields "min_volume" and "max_volume" in cfg/config_postprocess.json)
 Resulting boxes are saved in an alternative folder of your choice.
 
-The repository also offers step-by-step execution, following this roadmap. Numbers match the steps under [Main commands](#main-commands):
+The repository also offers step-by-step execution, following this roadmap. Numbers match the steps under [Step by step processing](#step-by-step-processing):
 
 ```text
      Raw CTP + CTA                                  CTA only
