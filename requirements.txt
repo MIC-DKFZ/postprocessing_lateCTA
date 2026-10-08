@@ -5,8 +5,9 @@
 # environment. This file intentionally does NOT cover:
 #   - torch / torchvision / torchaudio (needs a CUDA-specific --index-url,
 #     see README.md)
-#   - nnDetection (needs a git clone + a compiled CUDA build with
-#     --no-build-isolation --no-deps, see README.md)
+#   - nnDetection (git clone of the 'nextrelease' branch + a compiled CUDA build
+#     with --no-build-isolation, see README.md). It installs its own
+#     dependencies, such as pytorch_lightning and hydra-core
 #   - Skeleton-recall (local editable install: `pip install -e ./Skeleton-recall`)
 #   - SimpleITK-SimpleElastix (must be installed LAST, after Skeleton-recall,
 #     see README.md for why)
@@ -14,8 +15,6 @@
 #   pip install -r requirements.txt
 
 setuptools<81
-pytorch_lightning>=1.3.1,<=1.4.2
-torchmetrics>=0.7.0,<=0.7.3
 batchgenerators==0.25.3
 nnunet==1.7.1
 scipy==1.15.3
@@ -26,7 +25,6 @@ nevergrad==1.0.12
 dicom2nifti==2.6.2
 medpy==0.5.2
 loguru==0.7.3
-hydra-core>=1.1.0
 mlflow==3.16.0
 GitPython==3.1.62
 matplotlib==3.10.9

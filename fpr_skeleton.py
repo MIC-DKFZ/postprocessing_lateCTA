@@ -5,7 +5,10 @@ import numpy as np
 import os, sys
 import argparse
 import SimpleITK as sitk
-from nndet.core.boxes.ops_np import box_iou_np
+try:  # nnDetection 'nextrelease' branch
+    from nndet.core.ops_np import box_iou_np
+except ImportError:  # nnDetection v1
+    from nndet.core.boxes.ops_np import box_iou_np
 from typing import Union
 from scipy.spatial import cKDTree
 from scipy.ndimage import label, binary_erosion, binary_dilation

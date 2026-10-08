@@ -77,7 +77,7 @@ All of the code in this repository runs from **two conda environments**:
 - **`ctp-postprocess`** — the main environment: PyTorch, [nnDetection](https://github.com/MIC-DKFZ/nnDetection) (occlusion detection), the `Skeleton-recall` nnU-Net v2 fork bundled in this repo (CTA-to-time–vessel map generator), SimpleElastix (registration), and other dependencies.
 - **`ctp-totalseg`** — an environment containing only [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) and its own pinned `nnunetv2`. It is kept separate because TotalSegmentator's PyPI `nnunetv2` would otherwise collide with the custom `Skeleton-recall` fork used everywhere else for the CTA-to-time-vessel map generator.
 
-> **Note:** nnDetection's official releases are only tested against PyTorch 1.x (its README states PyTorch 2.0+ is not supported), while `Skeleton-recall` requires `torch>=2.1.2`. The steps below install nnDetection against PyTorch 2.x anyway, overriding its pinned dependencies. This combination has been built and smoke-tested end to end (CUDA extension compiles and runs, `box_iou_np`/`load_pickle` import correctly) on Python 3.10 + torch 2.5.1+cu118 + an RTX 4090 — but nnDetection's own Lightning-based training/inference pipeline (`nndet_train`, `nndet_predict`) was **not** exercised, only the lightweight `nndet.io` / `nndet.core.boxes` utilities this repo's scripts actually import.
+> **Note:** nnDetection is installed from its [`nextrelease`](https://github.com/MIC-DKFZ/nnDetection/tree/nextrelease) branch, which supports PyTorch 2.x. This repository only reads nnDetection's prediction files (`<case>_boxes.pkl`) and uses its `box_iou_np` function in `fpr_skeleton.py`, which also works with nnDetection v1.
 
 Run the commands below from the repository root. Both environments use `constraints.txt` to pin PyTorch: without it, any later `pip install` that re-resolves `torch` can pull the latest PyTorch with CUDA 13 libraries, which overwrite PyTorch 2.5.1's cuDNN and make every convolution fail with `cuDNN error: CUDNN_STATUS_NOT_INITIALIZED`. Setting `PIP_CONSTRAINT` in the environment applies the pins to every `pip install` run in it, including the editable installs below.
 
@@ -96,18 +96,21 @@ pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
 conda install -y -c conda-forge gxx_linux-64 ninja
 conda install -y -c nvidia/label/cuda-11.8.0 cuda-toolkit
 
-# --- Direct dependencies of nnDetection + this repo's top-level scripts ---
+# --- Direct dependencies of this repo's top-level scripts ---
 pip install -r requirements.txt
-pip install hydra-core --upgrade --pre
 
-# --- nnDetection. In the future to be updated to nnDetection v2, when this repository is out ---
-git clone https://github.com/MIC-DKFZ/nnDetection.git
+# --- nnDetection ('nextrelease' branch, supports PyTorch 2.x) ---
+git clone --branch nextrelease https://github.com/MIC-DKFZ/nnDetection.git
 cd nnDetection
 
-# Install nnDetection with argument --no-build-isolation:
+# --no-build-isolation compiles the CUDA extension against the installed PyTorch;
+# nnDetection's own dependencies are installed too, with PyTorch kept pinned by PIP_CONSTRAINT
 FORCE_CUDA=1 CUDA_HOME=$CONDA_PREFIX TORCH_CUDA_ARCH_LIST="<your GPU's compute capability, e.g. 8.9 for RTX 4090>" \
-    pip install -v -e . --no-build-isolation --no-deps
+    pip install -v -e . --no-build-isolation
 cd ..
+
+# Check that the compiled extension loads (run outside the nnDetection folder)
+python -c "import nndet._C, nndet; print('nnDetection OK')"
 
 # --- Skeleton-recall (custom nnU-Net v2 fork bundled in this repo for CTA-to-time-vessel map generator) ---
 pip install -e ./Skeleton-recall
@@ -264,12 +267,14 @@ python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model
 ### 5. Development of the CTA-to-time-vessel map generator
 
 #### 5.1 Distance map computation
+Compute vessel distance maps required for generator training
 ```
 conda activate ctp-postprocess
 python compute_distance.py --t /folder/with/time-vessel-maps --b /folder/where/to/store/brain/segmentations --o /folder/with/distance-maps
 ```
 
 #### 5.2 Data preparation
+Prepare raw data format for generator training. Data are trimmed to CTA FOV, and label files are saved containing a distance map and a time-vessel map
 ```
 conda activate ctp-postprocess
 python utils/prepare_raw_data_generator.py --c /your/cta/folder --t /folder/with/time-vessel-maps --d /folder/with/distance-maps --b /folder/where/to/store/brain/segmentations --task task_name (nnUNet style, "DatasetXYZ") --o /folder/with/raw/generator/data
