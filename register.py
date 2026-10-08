@@ -173,7 +173,7 @@ def temporal_mip(ctp: np.ndarray) -> np.ndarray:
 
 
 def extract_files_to_register(
-    in_folder: os.PathLike, out_folder: os.PathLike, cfg: dict
+    in_folder: os.PathLike, out_folder: os.PathLike, overwrite: bool = False
 ) -> list:
     """
     Extract files to register
@@ -182,25 +182,20 @@ def extract_files_to_register(
     ------
     in_folder : folder with input CTP frame files
     out_folder : folder with output CTP frame files
-    cfg : registration configuration
+    overwrite : register again frames that already exist in out_folder
 
     Returns
     -------
     files_register : files to be registered
 
     """
-    cfg_keys = list(cfg.keys())
-
-    assert "overwrite" in cfg_keys, "'overwrite' key not in configuration"
-    overwrite = cfg["overwrite"]
-
     files_register = []
 
     if os.path.exists(in_folder):
         files_register = [
             os.path.join(in_folder, file) for file in sorted(os.listdir(in_folder))
         ]
-        if (overwrite.lower().strip() == "n") and (os.path.exists(out_folder)):
+        if not overwrite and os.path.exists(out_folder):
             # Check if registration files already exist, and skip them
             input_ctp_files = np.array(sorted(os.listdir(in_folder)), dtype=str)
             output_ctp_files = np.array(sorted(os.listdir(out_folder)), dtype=str)
@@ -222,6 +217,7 @@ def execute_registration(
     out_folder: os.PathLike,
     cfg: dict,
     p: dict,
+    overwrite: bool = False,
 ):
     """
     Register CTA file to corresponding case ID in CTP folder
@@ -233,6 +229,7 @@ def execute_registration(
     out_folder : folder where to store the registered CTP data
     cfg : configuration for registration
     p : registration parameters
+    overwrite : register again frames that already exist in out_folder
 
     Returns
     -------
@@ -249,7 +246,7 @@ def execute_registration(
 
     # Extract files to register
     files_register = extract_files_to_register(
-        in_folder=cid_ctp_folder, out_folder=cid_out_folder, cfg=cfg
+        in_folder=cid_ctp_folder, out_folder=cid_out_folder, overwrite=overwrite
     )
 
     # Iterate through the files for registration
@@ -290,6 +287,7 @@ def main(args):
     ctp_folder = args.ctp
     cta_folder = args.cta
     out_folder = args.out
+    overwrite = args.overwrite
 
     assert os.path.exists(ctp_folder) and os.path.exists(
         cta_folder
@@ -333,6 +331,7 @@ def main(args):
                 out_folder=out_folder,
                 cfg=cfg,
                 p=p,
+                overwrite=overwrite,
             )
 
             outfile = os.path.join(out_folder, f"{cta_file.replace('.nii.gz','')}.png")
@@ -353,6 +352,11 @@ def get_args():
     parser.add_argument("--ctp", help="Folder with CTP data", required=True, type=str)
     parser.add_argument("--cta", help="Folder with CTA data", required=True, type=str)
     parser.add_argument("--out", help="Output folder", required=True, type=str)
+    parser.add_argument(
+        "--overwrite",
+        help="Register again cases whose output already exists",
+        action="store_true",
+    )
 
     args = parser.parse_args()
     return args

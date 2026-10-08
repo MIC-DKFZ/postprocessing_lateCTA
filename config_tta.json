@@ -3,7 +3,6 @@
  "state" : 42,
  "opening_iters" : 1,
  "cta_mask" : 1,
- "overwrite" : "n",
  "separation" : "y",
  "separation_method" : "percentile",
  "percentile" : 70,

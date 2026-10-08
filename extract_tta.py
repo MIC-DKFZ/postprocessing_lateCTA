@@ -741,6 +741,7 @@ def main(args):
     time_folder = args.time
     skull_folder = args.skull
     out_cta_folder = args.out_cta
+    overwrite = args.overwrite
     out = args.out
 
     assert os.path.exists(
@@ -788,12 +789,10 @@ def main(args):
     # Ensure case IDs are actually subfolders and not just files
     cids = [cid for cid in cids if os.path.isdir(os.path.join(ctp_folder, cid))]
 
-    assert "overwrite" in list(cfg.keys()), f"'overwrite' key not in configuration keys"
-
     # Iterate through case IDs
     for cid in cids:
         outfile = os.path.join(out, f"{cid}.nii.gz")
-        if not (os.path.exists(outfile)) or cfg["overwrite"].lower().strip() == "y":
+        if not (os.path.exists(outfile)) or overwrite:
             logger.info(f"Processing case ID: {cid}")
             cid_folder = os.path.join(ctp_folder, cid)
             case_analysis(
@@ -817,6 +816,11 @@ def get_args():
     parser.add_argument("--out", help="Output folder with TTA images", type=str)
     parser.add_argument(
         "--out_cta", help="Output folder with masked CTA images", type=str
+    )
+    parser.add_argument(
+        "--overwrite",
+        help="Process again cases whose output already exists",
+        action="store_true",
     )
     args = parser.parse_args()
 
