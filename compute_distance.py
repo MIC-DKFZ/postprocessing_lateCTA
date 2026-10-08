@@ -300,14 +300,11 @@ def process_file(
 
 def main(args):
     time_folder = args.t
-    brain_folder = args.b
     workers = args.w
     out_folder = args.o
-    bins = args.bin
     norm = bool(args.norm)
 
     assert os.path.exists(time_folder), f"Time folder '{time_folder}' does not exist"
-    # assert os.path.exists(brain_folder), f"Brain folder '{brain_folder}' does not exist"
 
     if not (os.path.exists(out_folder)):
         # Create output folder if it does not exist
@@ -315,7 +312,6 @@ def main(args):
 
     # Derive case IDs to compute
     files = sorted(os.listdir(time_folder))
-    # tag = "_norm.nii.gz"  # File tag to look for
     tag = ".nii.gz"  # File tag to look for
 
     norm_stats = None
@@ -372,16 +368,7 @@ def get_args():
     parser.add_argument(
         "--t", help="Folder with time information", required=True, type=str
     )
-    parser.add_argument(
-        "--b", help="Folder with brain information", required=True, type=str
-    )
     parser.add_argument("--w", help="Number of parallel workers", default=4, type=int)
-    parser.add_argument(
-        "--bin",
-        help="Number of bins to structure time information",
-        default=4,
-        type=int,
-    )
     parser.add_argument(
         "--norm", help="Apply distance-based normalization", default=0, type=int
     )

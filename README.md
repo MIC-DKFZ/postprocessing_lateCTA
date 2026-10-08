@@ -271,7 +271,7 @@ python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model
 Compute vessel distance maps required for generator training
 ```
 conda activate ctp-postprocess
-python compute_distance.py --t /folder/with/time-vessel-maps --b /folder/where/to/store/brain/segmentations --o /folder/with/distance-maps
+python compute_distance.py --t /folder/with/time-vessel-maps --o /folder/with/distance-maps
 ```
 
 #### 5.2 Data preparation
