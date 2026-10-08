@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 German Cancer Research Center (DKFZ) and contributors.
+# SPDX-License-Identifier: Apache-2.0
+#
+# pip constraints for both conda environments (see README.md, Installation).
+#
+# Several dependencies only ask for a minimum PyTorch version (e.g. torch>=2.1.2), so
+# any pip install that re-resolves torch can pull the latest PyTorch together with its
+# CUDA 13 libraries. Those overwrite the cuDNN that PyTorch 2.5.1 ships with, and every
+# convolution then fails with "cuDNN error: CUDNN_STATUS_NOT_INITIALIZED". Pinning the
+# versions here makes such an install fail loudly instead.
+#
+# The pins carry no CUDA suffix, so they match any CUDA build (+cu118, +cu124, ...).
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1

@@ -67,14 +67,17 @@ Time–vessel maps reach the constraints (step 4) in one of two ways:
 All of the code in this repository runs from **two conda environments**:
 
 - **`ctp-postprocess`** — the main environment: PyTorch, [nnDetection](https://github.com/MIC-DKFZ/nnDetection) (occlusion detection), the `Skeleton-recall` nnU-Net v2 fork bundled in this repo (CTA-to-time–vessel map generator), SimpleElastix (registration), and other dependencies.
-- **`ctp-totalseg`** — an environment containing only [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) and its own pinned `nnunetv2`. It is kept separate because TotalSegmentator's PyPI `nnunetv2` would otherwise collide with the custom `Skeleton-recall` fork used everywhere else.
+- **`ctp-totalseg`** — an environment containing only [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) and its own pinned `nnunetv2`. It is kept separate because TotalSegmentator's PyPI `nnunetv2` would otherwise collide with the custom `Skeleton-recall` fork used everywhere else for the CTA-to-time-vessel map generator.
 
 > **Note:** nnDetection's official releases are only tested against PyTorch 1.x (its README states PyTorch 2.0+ is not supported), while `Skeleton-recall` requires `torch>=2.1.2`. The steps below install nnDetection against PyTorch 2.x anyway, overriding its pinned dependencies. This combination has been built and smoke-tested end to end (CUDA extension compiles and runs, `box_iou_np`/`load_pickle` import correctly) on Python 3.10 + torch 2.5.1+cu118 + an RTX 4090 — but nnDetection's own Lightning-based training/inference pipeline (`nndet_train`, `nndet_predict`) was **not** exercised, only the lightweight `nndet.io` / `nndet.core.boxes` utilities this repo's scripts actually import.
+
+Run the commands below from the repository root. Both environments use `constraints.txt` to pin PyTorch: without it, any later `pip install` that re-resolves `torch` can pull the latest PyTorch with CUDA 13 libraries, which overwrite PyTorch 2.5.1's cuDNN and make every convolution fail with `cuDNN error: CUDNN_STATUS_NOT_INITIALIZED`. Setting `PIP_CONSTRAINT` in the environment applies the pins to every `pip install` run in it, including the editable installs below.
 
 ### 1. Main environment (`ctp-postprocess`)
 
 ```bash
 conda create -n ctp-postprocess python=3.10
+conda env config vars set -n ctp-postprocess PIP_CONSTRAINT="$(pwd)/constraints.txt"
 conda activate ctp-postprocess
 
 # --- PyTorch (CUDA 11.8 build; adjust to your driver/CUDA toolkit) ---
@@ -103,6 +106,9 @@ pip install -e ./Skeleton-recall
 
 # --- SimpleElastix build of SimpleITK, for registration capabilities
 pip install SimpleITK-SimpleElastix
+
+# --- Check that PyTorch, CUDA and cuDNN work together (should print "cuDNN OK") ---
+python -c "import torch; torch.nn.Conv3d(1, 1, 3).cuda()(torch.zeros(1, 1, 8, 8, 8, device='cuda')); print('cuDNN', torch.backends.cudnn.version(), 'OK')"
 ```
 
 nnDetection also requires a few environment variables to be set:
@@ -118,6 +124,7 @@ export det_num_threads=6
 
 ```bash
 conda create -n ctp-totalseg python=3.10
+conda env config vars set -n ctp-totalseg PIP_CONSTRAINT="$(pwd)/constraints.txt"
 conda activate ctp-totalseg
 
 # Pin torch to a CUDA build your driver actually supports BEFORE installing
@@ -127,6 +134,20 @@ conda activate ctp-totalseg
 pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
 
 pip install -r requirements-totalseg.txt
+
+# Should print "cuDNN OK"
+python -c "import torch; torch.nn.Conv3d(1, 1, 3).cuda()(torch.zeros(1, 1, 8, 8, 8, device='cuda')); print('cuDNN', torch.backends.cudnn.version(), 'OK')"
+```
+
+#### Troubleshooting: `cuDNN error: CUDNN_STATUS_NOT_INITIALIZED`
+
+This means CUDA 13 libraries were installed into an environment without the constraint and replaced PyTorch's cuDNN. In `ctp-postprocess`, remove them and restore the CUDA 11 files:
+
+```bash
+pip uninstall -y nvidia-cudnn-cu13 nvidia-nccl-cu13 nvidia-cusparselt-cu13 nvidia-nvshmem-cu13 \
+  nvidia-cublas nvidia-cuda-runtime nvidia-cuda-cupti nvidia-cuda-nvrtc nvidia-cufft nvidia-cufile \
+  nvidia-curand nvidia-cusolver nvidia-cusparse nvidia-nvjitlink nvidia-nvtx cuda-toolkit cuda-bindings cuda-pathfinder
+pip install --force-reinstall --no-deps nvidia-cudnn-cu11==9.1.0.70 nvidia-nccl-cu11==2.21.5
 ```
 
 `postprocess_end2end.py` calls TotalSegmentator as an external subprocess and does not need `ctp-totalseg` to be active — just point it at the environment's binary:
@@ -149,7 +170,7 @@ python postprocess_end2end.py --d /path/to/cta/data --m /path/to/generator/model
 ```
 
 ### Full pipeline: data structure
-To start from a folder with CTP data and a folder with CTA data, use this structure:
+To start from a folder with CTP data (one .nii.gz file for every CTP frame, up to NN frames) and a folder with CTA data, use this structure:
 ```text
 ctp_folder/
 ├── case0/
@@ -184,9 +205,9 @@ python register.py --cta /your/cta/folder --ctp /your/ctp/folder --out /register
 ### 2. CTP curation
 Start with the registered CTP folder from step 1.
 
-> **Note:** run this step in the `ctp-totalseg` environment.
+> **Note:** run this step in the `ctp-totalseg` environment, as it requires brain segmentation in TotalSegmentator.
 
-It requires a nnU-Net vessel segmentation model, with a folder path in 'cfg/config_preprocess.json' ('mca_cpt'). Right now this field is named as PLACEHOLDER
+It requires a nnU-Net vessel segmentation model, with a folder path in 'cfg/config_preprocess.json' ('mca_cpt'), to extract region of interest for AIF extraction. Right now this field is named as PLACEHOLDER
 
 Contact us if you require the model. 
 ```
