@@ -99,8 +99,6 @@ def process_id(
     dist_img = dist_img[low_lim:high_lim]
     if not (os.path.exists(out_dist_file)):
 
-        # dist_img[:low_lim] = dist_img.max()
-        # dist_img[high_lim:] = dist_img.max()
         dist_image_trim = sitk.GetImageFromArray(dist_img)
         dist_image_trim.SetSpacing(cta_image.GetSpacing())
         dist_image_trim.SetOrigin(cta_image.GetOrigin())
@@ -116,7 +114,6 @@ def process_id(
         cta_image_trim.SetOrigin(cta_image.GetOrigin())
         cta_image_trim.SetDirection(cta_image.GetDirection())
         sitk.WriteImage(cta_image_trim, out_cta_file)
-        # shutil.copyfile(cta_file, out_cta_file)
 
     # Set up brain file
     if brain_file is not None:
@@ -127,7 +124,6 @@ def process_id(
             brain_image_trim.SetOrigin(brain_image.GetOrigin())
             brain_image_trim.SetDirection(brain_image.GetDirection())
             sitk.WriteImage(brain_image_trim, out_brain_file)
-            # shutil.copyfile(brain_file, out_brain_file)
 
     # Convert time image into rank image
     time_image = sitk.ReadImage(time_file)
@@ -144,7 +140,6 @@ def process_id(
         sitk.WriteImage(rank_image, out_time_file)
 
     # Set up output label file
-    # if not(os.path.exists(out_label_file)):
     label_img = np.zeros([2] + list(rank_img.shape), dtype=np.float32)
     label_img[0] = dist_img
     label_img[1] = rank_img
