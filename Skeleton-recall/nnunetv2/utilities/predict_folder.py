@@ -180,9 +180,6 @@ def main(args):
             )
             r = predictor.predict_from_data_iterator(iterator, False, 1)
 
-            # convert outputted distance map to not normalized version
-            # r[0] *= cfg["std"]
-
             # Postprocess prediction with distance, time, and segmentation heads
 
             out, logit_map = postprocess_preds(
