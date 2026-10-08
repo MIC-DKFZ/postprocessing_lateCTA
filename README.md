@@ -93,7 +93,8 @@ pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
     --index-url https://download.pytorch.org/whl/cu118
 
 # --- Build tools needed to compile nnDetection's CUDA extensions ---
-conda install -y -c conda-forge gxx_linux-64 ninja
+# GCC 11 is the newest compiler CUDA 11.8 supports; unpinned, conda installs a newer one
+conda install -y -c conda-forge "gxx_linux-64=11" "gcc_linux-64=11" ninja
 conda install -y -c nvidia/label/cuda-11.8.0 cuda-toolkit
 
 # --- Direct dependencies of this repo's top-level scripts ---
@@ -110,7 +111,7 @@ FORCE_CUDA=1 CUDA_HOME=$CONDA_PREFIX TORCH_CUDA_ARCH_LIST="<your GPU's compute c
 cd ..
 
 # Check that the compiled extension loads (run outside the nnDetection folder)
-python -c "import nndet._C, nndet; print('nnDetection OK')"
+python -c "import torch, nndet._C, nndet; print('nnDetection OK')"
 
 # --- Skeleton-recall (custom nnU-Net v2 fork bundled in this repo for CTA-to-time-vessel map generator) ---
 pip install -e ./Skeleton-recall
