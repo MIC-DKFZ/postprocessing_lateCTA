@@ -3,7 +3,7 @@
  "state" : 42,
  "opening_iters" : 1,
  "cta_mask" : 1,
- "separation" : "y",
+ "separation" : "n",
  "separation_method" : "percentile",
  "percentile" : 70,
  "n_clusters_separation" : 3,
